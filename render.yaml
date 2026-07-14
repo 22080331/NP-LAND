@@ -33,10 +33,7 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: np-land-backend
-          property: host  # Render tự điền dạng "https://np-land-backend.onrender.com" khi build
+        value: https://np-land-backend.onrender.com
     routes:
       - type: rewrite
         source: /*
