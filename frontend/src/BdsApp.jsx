@@ -432,6 +432,13 @@ svg.ic{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;
 .pwform input{border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:16px;
   font-family:inherit;background:var(--bg);color:var(--ink);outline:none}
 .pwform input:focus{border-color:var(--brand)}
+.pwwrap{position:relative;flex:1;display:flex}
+.pwwrap>input{flex:1;width:100%}
+.pweye{position:absolute;right:2px;top:0;bottom:0;display:grid;place-items:center;background:none;
+  border:0;padding:0 8px;cursor:pointer;color:#8FA6C6}
+.pweye:hover{color:var(--brand)}
+.pwform .pwwrap>input{padding-right:42px}
+.lfield .pwwrap>input{padding-right:34px}
 .pwbtn{border:0;background:var(--brand);color:#fff;padding:12px;border-radius:10px;font-size:14px;
   font-weight:800;cursor:pointer;font-family:inherit}
 .pwbtn:disabled{opacity:.6}
@@ -504,12 +511,29 @@ const P = {
   cam: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3l2-3h6l2 3h3a2 2 0 0 1 2 2ZM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6",
   x: "M6 6l12 12M18 6L6 18",
+  eye: "M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  eyeoff: "M3 3l18 18M10.6 10.6a3 3 0 0 0 4.2 4.2M9.9 4.2A11 11 0 0 1 12 4c7 0 11 7 11 7a18 18 0 0 1-3.1 3.7M6.5 6.5A18 18 0 0 0 1 12s4 7 11 7a11 11 0 0 0 3.5-.6",
 };
 const Icon = ({ n, size }) => (
   <svg className="ic" viewBox="0 0 24 24" style={size ? { width: size, height: size } : undefined}>
     {(P[n] || "").split("M").filter(Boolean).map((d, i) => <path key={i} d={"M" + d} />)}
   </svg>
 );
+
+// Ô nhập mật khẩu có nút con mắt bật/tắt hiển thị — dùng chung cho login, đổi & tạo mật khẩu.
+function PwInput(props) {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="pwwrap">
+      <input {...props} type={show ? "text" : "password"} />
+      <button type="button" className="pweye" tabIndex={-1}
+        aria-label={show ? "Ẩn mật khẩu" : "Hiện mật khẩu"}
+        onClick={() => setShow((s) => !s)}>
+        <Icon n={show ? "eyeoff" : "eye"} size={18} />
+      </button>
+    </span>
+  );
+}
 
 const STATUS = {
   dang_ban: { label: "Đang bán", c: "var(--ok)" },
@@ -662,7 +686,7 @@ function LoginView({ onLogin }) {
         </div>
         <div className="lfield">
           <span className="lic"><Icon n="lock" size={17} /></span>
-          <input type="password" placeholder="Mật khẩu" value={p}
+          <PwInput placeholder="Mật khẩu" value={p}
             onChange={(e) => setP(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()} />
         </div>
@@ -1133,7 +1157,7 @@ function MembersView({ onBack, confirm }) {
             </div>
             {resetFor === u.id && (
               <div className="pwform" style={{ paddingTop: 0 }}>
-                <input type="password" placeholder={`Mật khẩu mới cho ${u.name}`} value={resetPw} onChange={(e) => setResetPw(e.target.value)} autoFocus />
+                <PwInput placeholder={`Mật khẩu mới cho ${u.name}`} value={resetPw} onChange={(e) => setResetPw(e.target.value)} autoFocus />
                 <button className="pwbtn" onClick={() => doReset(u)}>Đặt lại mật khẩu</button>
               </div>
             )}
@@ -1151,7 +1175,7 @@ function MembersView({ onBack, confirm }) {
           <div className="pwform" style={{ paddingTop: 14 }}>
             <input placeholder="Tên hiển thị (VD: Hương)" value={nm} onChange={(e) => setNm(e.target.value)} autoFocus />
             <input placeholder="SĐT làm tài khoản (VD: 0912345678)" inputMode="tel" value={un} autoCapitalize="none" onChange={(e) => setUn(e.target.value)} />
-            <input type="password" placeholder="Mật khẩu ban đầu" value={pw} onChange={(e) => setPw(e.target.value)} />
+            <PwInput placeholder="Mật khẩu ban đầu" value={pw} onChange={(e) => setPw(e.target.value)} />
             <button className="pwbtn" onClick={add} disabled={saving}>{saving ? "Đang tạo…" : "Tạo tài khoản"}</button>
             <button className="cancel" style={{ marginTop: 0 }} onClick={() => setShowAdd(false)}>Huỷ</button>
           </div>
@@ -1221,9 +1245,9 @@ function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
         </div>
         {pwOpen && (
           <div className="pwform">
-            <input type="password" placeholder="Mật khẩu hiện tại" value={oldPw} onChange={(e) => setOldPw(e.target.value)} />
-            <input type="password" placeholder="Mật khẩu mới" value={pw1} onChange={(e) => setPw1(e.target.value)} />
-            <input type="password" placeholder="Nhập lại mật khẩu mới" value={pw2} onChange={(e) => setPw2(e.target.value)} />
+            <PwInput placeholder="Mật khẩu hiện tại" value={oldPw} onChange={(e) => setOldPw(e.target.value)} />
+            <PwInput placeholder="Mật khẩu mới" value={pw1} onChange={(e) => setPw1(e.target.value)} />
+            <PwInput placeholder="Nhập lại mật khẩu mới" value={pw2} onChange={(e) => setPw2(e.target.value)} />
             <button className="pwbtn" onClick={submitPw} disabled={saving}>{saving ? "Đang lưu…" : "Xác nhận đổi"}</button>
           </div>
         )}
