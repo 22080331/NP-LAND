@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bds
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-bds_secret}
+      POSTGRES_DB: bds
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bds -d bds"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://bds:${DB_PASSWORD:-bds_secret}@db:5432/bds
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      PUBLIC_URL: ${PUBLIC_URL}
+      FLASK_ENV: production
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
