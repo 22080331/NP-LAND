@@ -63,6 +63,13 @@ class User(db.Model):
     def check_pw(self, pw): return check_password_hash(self.password_hash, pw)
     def dict(self): return {"id": self.id, "username": self.username, "name": self.name, "role": self.role}
 
+def mask_phone(p):
+    """Che giữa SĐT: 0903123456 -> 090****456. Người không đăng tin chỉ thấy dạng này."""
+    d = "".join(ch for ch in (p or "") if ch.isdigit())
+    if len(d) < 6:
+        return "•••"
+    return d[:3] + "*" * (len(d) - 6) + d[-3:]
+
 class Contact(db.Model):
     __tablename__ = "contacts"
     id = db.Column(db.String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -70,7 +77,19 @@ class Contact(db.Model):
     type = db.Column(db.String)   # "đầu chủ" | "khách quan tâm"
     name = db.Column(db.String)
     phone = db.Column(db.String)
-    def dict(self): return {"type": self.type, "name": self.name, "phone": self.phone}
+    def dict(self, mask=False):
+        return {
+            "type": self.type,
+            "name": None if mask else self.name,
+            "phone": mask_phone(self.phone) if mask else self.phone,
+            "masked": mask,
+        }
+
+class Favorite(db.Model):
+    __tablename__ = "favorites"
+    id = db.Column(db.String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String, db.ForeignKey("users.id"))
+    property_id = db.Column(db.String, db.ForeignKey("properties.id"))
 
 class Property(db.Model):
     __tablename__ = "properties"
@@ -98,6 +117,8 @@ class Property(db.Model):
     posted_by = db.Column(db.String, db.ForeignKey("users.id"))
     is_archived = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime)   # lần sửa gần nhất
+    status_at = db.Column(db.DateTime)    # lần đổi trạng thái gần nhất
     contacts = db.relationship("Contact", backref="property", cascade="all, delete-orphan")
 
     def imgs_list(self):
@@ -108,9 +129,10 @@ class Property(db.Model):
             return []
 
     def dict(self, viewer=None):
-        """viewer: user đang xem. Liên hệ chính chủ chỉ hiện với người đăng hoặc admin."""
+        """viewer: user đang xem. SĐT chính chủ chỉ hiện đủ với người đăng/admin; người khác thấy che một phần."""
         poster = User.query.get(self.posted_by) if self.posted_by else None
         can_edit = viewer is not None and (viewer.id == self.posted_by or viewer.role == "admin")
+        is_fav = bool(viewer) and Favorite.query.filter_by(user_id=viewer.id, property_id=self.id).first() is not None
         imgs = self.imgs_list()
         cover = self.img or (imgs[0] if imgs else "")
         return {
@@ -121,9 +143,11 @@ class Property(db.Model):
             "legal": self.legal, "land": self.land, "planning": self.planning, "division": self.division,
             "source": self.source, "status": self.status, "img": cover, "imgs": imgs,
             "posted_by": poster.name if poster else None,
-            "can_edit": can_edit,
-            "contacts": [c.dict() for c in self.contacts] if can_edit else [],
+            "can_edit": can_edit, "is_fav": is_fav,
+            "contacts": [c.dict(mask=not can_edit) for c in self.contacts],
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "status_at": self.status_at.isoformat() if self.status_at else None,
         }
 
 # ============================ AUTH ============================
@@ -283,6 +307,7 @@ def create_prop(user):
     # Tự lấy toạ độ nếu chưa có
     if (not p.lat or not p.lng) and (p.address or p.khu):
         p.lat, p.lng = geocode(p.address, p.khu)
+    p.status_at = datetime.utcnow()
     db.session.add(p); db.session.flush()
     for c in (d.get("contacts") or []):
         db.session.add(Contact(property_id=p.id, type=c.get("type"), name=c.get("name"), phone=c.get("phone")))
@@ -303,6 +328,7 @@ def update_prop(user, pid):
     if p.posted_by != user.id and user.role != "admin":
         return jsonify({"error": "Chỉ người đăng tin mới được sửa"}), 403
     d = request.get_json() or {}
+    old_status = p.status
     if "desc" in d: p.description = d["desc"]
     for f in FIELDS:
         if f in d: setattr(p, f, d[f])
@@ -311,6 +337,10 @@ def update_prop(user, pid):
         Contact.query.filter_by(property_id=p.id).delete()
         for c in d["contacts"]:
             db.session.add(Contact(property_id=p.id, type=c.get("type"), name=c.get("name"), phone=c.get("phone")))
+    now = datetime.utcnow()
+    p.updated_at = now
+    if "status" in d and d["status"] != old_status:
+        p.status_at = now
     db.session.commit()
     return jsonify({"property": p.dict(user)})
 
@@ -324,6 +354,67 @@ def del_prop(user, pid):
     p.is_archived = True; db.session.commit()
     return jsonify({"ok": True})
 
+# ======================= CHỐNG TRÙNG TIN =======================
+def _haversine(a, b, c, d):
+    """Khoảng cách 2 toạ độ (mét)."""
+    from math import radians, sin, cos, asin, sqrt
+    a, b, c, d = map(radians, [a, b, c, d])
+    return 2 * 6371000 * asin(sqrt(sin((c - a) / 2) ** 2 + cos(a) * cos(c) * sin((d - b) / 2) ** 2))
+
+@app.get("/api/properties/check-dup")
+@token_required
+def check_dup(user):
+    """Cảnh báo tin có thể trùng: cùng SĐT chính chủ, hoặc toạ độ/địa chỉ gần trùng."""
+    a = request.args
+    phone_digits = "".join(ch for ch in (a.get("phone") or "") if ch.isdigit())
+    addr = (a.get("address") or "").strip().lower()
+    khu = (a.get("khu") or "").strip()
+    exclude = a.get("exclude")
+    try:
+        lat = float(a.get("lat")) if a.get("lat") else None
+        lng = float(a.get("lng")) if a.get("lng") else None
+    except ValueError:
+        lat = lng = None
+
+    matches = []
+    for p in Property.query.filter_by(is_archived=False).all():
+        if exclude and p.id == exclude:
+            continue
+        reasons = []
+        if phone_digits:
+            for c in p.contacts:
+                cd = "".join(ch for ch in (c.phone or "") if ch.isdigit())
+                if cd and cd == phone_digits:
+                    reasons.append("cùng SĐT chính chủ"); break
+        if lat and lng and p.lat and p.lng:
+            if _haversine(lat, lng, p.lat, p.lng) < 150:
+                reasons.append("vị trí rất gần (dưới 150m)")
+        elif addr and p.address and khu and p.khu == khu and (addr in p.address.lower() or p.address.lower() in addr):
+            reasons.append("địa chỉ gần trùng")
+        if reasons:
+            poster = User.query.get(p.posted_by) if p.posted_by else None
+            matches.append({"id": p.id, "title": p.title, "khu": p.khu,
+                            "posted_by": poster.name if poster else None,
+                            "reason": " · ".join(reasons)})
+    return jsonify({"matches": matches})
+
+# ======================= TIN THEO DÕI (bookmark cá nhân) =======================
+@app.post("/api/properties/<pid>/favorite")
+@token_required
+def add_fav(user, pid):
+    if not Property.query.get(pid):
+        return jsonify({"error": "Không tìm thấy"}), 404
+    if not Favorite.query.filter_by(user_id=user.id, property_id=pid).first():
+        db.session.add(Favorite(user_id=user.id, property_id=pid)); db.session.commit()
+    return jsonify({"ok": True, "is_fav": True})
+
+@app.delete("/api/properties/<pid>/favorite")
+@token_required
+def del_fav(user, pid):
+    Favorite.query.filter_by(user_id=user.id, property_id=pid).delete()
+    db.session.commit()
+    return jsonify({"ok": True, "is_fav": False})
+
 # ======================= AI BÓC TÁCH =======================
 @app.post("/api/ai-parse")
 @token_required
@@ -335,7 +426,7 @@ TIN: "{text}"
 Danh sách thôn có thể có: {", ".join(KHU_VUC)}.
 
 Trả về DUY NHẤT một object JSON (không markdown, không giải thích) với các khóa:
-title, type (đất|nhà|căn hộ|shop|văn phòng), area (số m²), frontage (số hoặc null),
+title, type (đất nền|nhà ở|đất dịch vụ|khác), area (số m²), frontage (số hoặc null),
 direction (hướng hoặc ""), khu (tên thôn nếu khớp danh sách trên, hoặc ""),
 address, price (số nguyên VNĐ),
 legal (sổ đỏ|sổ hồng|sổ chung|vi bằng|chưa có),
@@ -424,8 +515,24 @@ def seed():
     db.session.commit()
 
 
+def migrate():
+    """Thêm cột mới cho DB đã tồn tại (create_all không tự ALTER) + dọn dữ liệu cũ."""
+    from sqlalchemy import inspect as sa_inspect, text
+    try:
+        cols = [c["name"] for c in sa_inspect(db.engine).get_columns("properties")]
+    except Exception:
+        return
+    with db.engine.begin() as conn:
+        if "updated_at" not in cols:
+            conn.execute(text("ALTER TABLE properties ADD COLUMN updated_at TIMESTAMP"))
+        if "status_at" not in cols:
+            conn.execute(text("ALTER TABLE properties ADD COLUMN status_at TIMESTAMP"))
+        # 'quan_tam' không còn là trạng thái chung của lô -> gộp về 'dang_ban'
+        conn.execute(text("UPDATE properties SET status='dang_ban' WHERE status='quan_tam'"))
+
 with app.app_context():
     db.create_all()
+    migrate()
     seed()
 
 if __name__ == "__main__":

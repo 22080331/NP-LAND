@@ -39,6 +39,13 @@ const STYLES = `
 .mlabel{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--faint)}
 svg.ic{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;
   stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
+/* nút sao "theo dõi" */
+.favbtn{background:none;border:0;cursor:pointer;padding:4px;color:var(--faint);display:grid;place-items:center}
+.favbtn.on{color:#E0A93B}
+.favbtn.on svg.ic{fill:#E0A93B;stroke:#E0A93B}
+.cardfav{position:absolute;top:8px;right:8px;z-index:2;background:rgba(255,255,255,.92);border-radius:50%;
+  width:32px;height:32px;box-shadow:0 1px 4px rgba(0,0,0,.18)}
+.bds.dark .cardfav{background:rgba(24,38,64,.92)}
 
 .top{position:sticky;top:0;z-index:20;background:linear-gradient(160deg,#134073,#0C2E56);
   padding:12px 16px 10px;display:flex;flex-direction:column;align-items:center;gap:7px}
@@ -162,6 +169,7 @@ svg.ic{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;
 .person .call{margin-left:auto;display:flex;align-items:center;gap:6px;text-decoration:none;
   border:1px solid var(--brand);color:var(--brand-d);padding:7px 12px;border-radius:9px;font-size:12px;font-weight:700}
 .person .call svg{width:15px;height:15px}
+.person .call.masked{border-style:dashed;opacity:.75;letter-spacing:.5px;cursor:default}
 
 .mapwrap{border:1px solid var(--line);border-radius:11px;overflow:hidden;height:190px;background:var(--brand-t);
   position:relative;z-index:0}
@@ -513,6 +521,7 @@ const P = {
   x: "M6 6l12 12M18 6L6 18",
   eye: "M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
   eyeoff: "M3 3l18 18M10.6 10.6a3 3 0 0 0 4.2 4.2M9.9 4.2A11 11 0 0 1 12 4c7 0 11 7 11 7a18 18 0 0 1-3.1 3.7M6.5 6.5A18 18 0 0 0 1 12s4 7 11 7a11 11 0 0 0 3.5-.6",
+  star: "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9Z",
 };
 const Icon = ({ n, size }) => (
   <svg className="ic" viewBox="0 0 24 24" style={size ? { width: size, height: size } : undefined}>
@@ -535,14 +544,15 @@ function PwInput(props) {
   );
 }
 
-// Thứ tự theo mức độ tra cứu nhiều: Đang bán > Quan tâm > Cọc > Đã bán (ít dùng, để cuối)
+// Trạng thái chung của lô (không còn "Quan tâm" — đã tách thành bookmark cá nhân)
 const STATUS = {
   dang_ban: { label: "Đang bán", c: "var(--ok)" },
-  quan_tam: { label: "Quan tâm", c: "var(--info)" },
   coc: { label: "Cọc", c: "var(--warn)" },
   da_ban: { label: "Đã bán", c: "var(--off)" },
 };
-const TYPES = ["đất", "nhà", "căn hộ", "shop", "văn phòng"];
+// Trạng thái cũ đã bỏ nhưng dữ liệu lỡ còn -> hiển thị an toàn
+const statusOf = (k) => STATUS[k] || { label: "Đang bán", c: "var(--ok)" };
+const TYPES = ["đất nền", "nhà ở", "đất dịch vụ", "khác"];
 const SOURCE = ["chính chủ", "qua cò"];
 const PRICE_RANGES = [
   { label: "Mức giá", min: 0, max: Infinity },
@@ -745,6 +755,7 @@ export default function App() {
   const [fSource, setFSource] = useState("");
   const [fPrice, setFPrice] = useState(0);
   const [fSort, setFSort] = useState("new");
+  const [fFav, setFFav] = useState(false);
   const [q, setQ] = useState("");
   // Tin khớp SĐT liên hệ (đầu chủ/khách) — tra qua server vì contact bị ẩn phía client với người không đăng tin
   const [phoneIds, setPhoneIds] = useState(() => new Set());
@@ -765,6 +776,7 @@ export default function App() {
       if (fKhu && p.khu !== fKhu) return false;
       if (fSource && p.source !== fSource) return false;
       if (fPrice > 0 && !((p.price || 0) >= pr.min && (p.price || 0) < pr.max)) return false;
+      if (fFav && !p.is_fav) return false;
       if (q) {
         const textMatch = (p.title + " " + p.address + " " + (p.khu || "") + " " + (p.desc || "")).toLowerCase().includes(q.toLowerCase());
         if (!textMatch && !phoneIds.has(p.id)) return false;
@@ -778,11 +790,20 @@ export default function App() {
       area_desc: (a, b) => (b.area || 0) - (a.area || 0),
     };
     return arr.sort(by[fSort] || by.new);
-  }, [props, fStatus, fType, fKhu, fSource, fPrice, fSort, q, phoneIds]);
+  }, [props, fStatus, fType, fKhu, fSource, fPrice, fSort, fFav, q, phoneIds]);
 
   const open = (p) => { setSel(p); setView("detail"); };
   const startAdd = () => { setEditing(null); setView("add"); };
   const startEdit = (p) => { setEditing(p); setView("add"); };
+
+  // Bật/tắt "theo dõi" (bookmark cá nhân) — cập nhật lạc quan rồi gọi API
+  const toggleFav = async (p) => {
+    const on = !p.is_fav;
+    setProps((ps) => ps.map((x) => (x.id === p.id ? { ...x, is_fav: on } : x)));
+    setSel((s) => (s && s.id === p.id ? { ...s, is_fav: on } : s));
+    try { await api.favorite(p.id, on); }
+    catch { setProps((ps) => ps.map((x) => (x.id === p.id ? { ...x, is_fav: !on } : x))); }
+  };
 
   const saveProp = async (p) => {
     try {
@@ -845,13 +866,14 @@ export default function App() {
         <List items={filtered} total={props.length} q={q} setQ={setQ}
           fStatus={fStatus} setFStatus={setFStatus} fType={fType} setFType={setFType}
           fKhu={fKhu} setFKhu={setFKhu} fSource={fSource} setFSource={setFSource}
-          fPrice={fPrice} setFPrice={setFPrice} fSort={fSort} setFSort={setFSort} onOpen={open} />
+          fPrice={fPrice} setFPrice={setFPrice} fSort={fSort} setFSort={setFSort}
+          fFav={fFav} setFFav={setFFav} onFav={toggleFav} onOpen={open} />
       )}
       {view === "map" && <MapView items={props} onOpen={open} />}
       {view === "stats" && <StatsView items={props} user={user} />}
       {view === "settings" && <SettingsView user={user} isAdmin={role === "admin"} onMembers={() => setView("members")} dark={dark} onDark={toggleDark} onLogout={logout} />}
       {view === "members" && role === "admin" && <MembersView onBack={() => setView("settings")} confirm={setConfirm} />}
-      {view === "detail" && sel && <Detail p={sel} onBack={() => setView("list")} onEdit={() => startEdit(sel)} onDelete={() => deleteProp(sel)} onStatus={(st) => quickStatus(sel, st)} />}
+      {view === "detail" && sel && <Detail p={sel} onBack={() => setView("list")} onEdit={() => startEdit(sel)} onDelete={() => deleteProp(sel)} onStatus={(st) => quickStatus(sel, st)} onFav={() => toggleFav(sel)} />}
       {view === "add" && <AddForm initial={editing} onSave={saveProp} onCancel={() => { setEditing(null); setView(editing ? "detail" : "list"); }} />}
 
       {confirm && (
@@ -888,7 +910,7 @@ export default function App() {
   );
 }
 
-function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKhu, setFKhu, fSource, setFSource, fPrice, setFPrice, fSort, setFSort, onOpen }) {
+function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKhu, setFKhu, fSource, setFSource, fPrice, setFPrice, fSort, setFSort, fFav, setFFav, onFav, onOpen }) {
   return (
     <>
       <div className="search">
@@ -899,7 +921,10 @@ function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKh
       </div>
 
       <div className="filters">
-        <span className={"chip" + (!fStatus ? " on" : "")} onClick={() => setFStatus(null)}>Tất cả</span>
+        <span className={"chip" + (!fStatus && !fFav ? " on" : "")} onClick={() => { setFStatus(null); setFFav(false); }}>Tất cả</span>
+        <span className={"chip chipfav" + (fFav ? " on" : "")} onClick={() => setFFav(!fFav)}>
+          <Icon n="star" size={13} />Theo dõi
+        </span>
         {Object.entries(STATUS).map(([k, v]) => (
           <span key={k} className={"chip" + (fStatus === k ? " on" : "")} onClick={() => setFStatus(fStatus === k ? null : k)}>
             <span className="dot" style={{ background: v.c }} />{v.label}
@@ -943,12 +968,14 @@ function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKh
       ) : (
         <div className="list">
           {items.map((p) => {
-            const st = STATUS[p.status];
+            const st = statusOf(p.status);
             return (
               <div className="card" key={p.id} onClick={() => onOpen(p)}>
                 <div className="thumb" style={p.img ? { backgroundImage: `url(${resolveUrl(p.img)})` } : {}}>
                   {!p.img && <Icon n="home" size={26} />}
                   <span className="stpill"><span className="dot" style={{ background: st.c }} />{st.label}</span>
+                  <button className={"favbtn cardfav" + (p.is_fav ? " on" : "")} title={p.is_fav ? "Bỏ theo dõi" : "Theo dõi"}
+                    onClick={(e) => { e.stopPropagation(); onFav(p); }}><Icon n="star" size={17} /></button>
                 </div>
                 <div className="body">
                   <p className="ttl">{p.title}</p>
@@ -1019,7 +1046,7 @@ function MapView({ items, onOpen }) {
       <div className="cnt num">{geo.length} tin có toạ độ · chạm ghim hoặc tin để xem</div>
       <div className="mapstrip">
         {geo.map((p) => {
-          const st = STATUS[p.status];
+          const st = statusOf(p.status);
           return (
             <div key={p.id} className={"mrow" + (sel === p.id ? " on" : "")} onClick={() => focus(p)}>
               <div className="pin"><Icon n="pin" size={18} /></div>
@@ -1296,12 +1323,12 @@ function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
   );
 }
 
-function Detail({ p, onBack, onEdit, onDelete, onStatus }) {
+function Detail({ p, onBack, onEdit, onDelete, onStatus, onFav }) {
   const [sheet, setSheet] = useState(false);
   const [stSheet, setStSheet] = useState(false);
   const gallery = ((p.imgs && p.imgs.length ? p.imgs : (p.img ? [p.img] : [])) || []).map(resolveUrl);
   const [cur, setCur] = useState(0);
-  const st = STATUS[p.status];
+  const st = statusOf(p.status);
   const owner = p.contacts?.find((c) => c.type === "đầu chủ");
   const interested = p.contacts?.filter((c) => c.type === "khách quan tâm") || [];
   const hero = gallery[cur];
@@ -1311,12 +1338,14 @@ function Detail({ p, onBack, onEdit, onDelete, onStatus }) {
       <div className="hero" style={hero ? { backgroundImage: `url(${hero})` } : {}}>
         {!hero && <Icon n="home" size={40} />}
         <button className="rnd back" onClick={onBack}><Icon n="back" /></button>
-        {p.can_edit && (
-          <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8, zIndex: 2 }}>
+        <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8, zIndex: 2 }}>
+          <button className={"rnd favbtn" + (p.is_fav ? " on" : "")} style={{ position: "static" }}
+            title={p.is_fav ? "Bỏ theo dõi" : "Theo dõi"} onClick={onFav}><Icon n="star" /></button>
+          {p.can_edit && <>
             <button className="rnd" style={{ position: "static" }} title="Sửa tin" onClick={onEdit}><Icon n="edit" /></button>
             <button className="rnd" style={{ position: "static" }} title="Xoá tin" onClick={onDelete}><Icon n="trash" /></button>
-          </div>
-        )}
+          </>}
+        </div>
         <span className={"stpill" + (p.can_edit ? " tap" : "")}
           onClick={() => p.can_edit && setStSheet(true)}>
           <span className="dot" style={{ background: st.c }} />{st.label}
@@ -1334,6 +1363,11 @@ function Detail({ p, onBack, onEdit, onDelete, onStatus }) {
       <div className="dhead">
         <h2 className="ttl">{p.title}</h2>
         <div className="price num">{fmtPrice(p.price)} {fmtM2(p.price_per_m2) && <small>· {fmtM2(p.price_per_m2)}</small>}</div>
+        <div style={{ fontSize: 12, color: "var(--faint)", marginTop: 6, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {p.created_at && <span>Đăng {timeAgo(p.created_at)}</span>}
+          {p.updated_at && <span>· Sửa lần cuối {timeAgo(p.updated_at)}</span>}
+          {p.status_at && <span>· Đổi trạng thái {timeAgo(p.status_at)}</span>}
+        </div>
       </div>
 
       <div className="sec">
@@ -1367,23 +1401,27 @@ function Detail({ p, onBack, onEdit, onDelete, onStatus }) {
           <div className="lockbox">
             <span className="lockic"><Icon n="lock" size={17} /></span>
             <div>
-              <div className="lt">Thông tin chính chủ được giữ riêng</div>
-              <div className="ls">Muốn biết SĐT/tên {p.source === "qua cò" ? "môi giới" : "chính chủ"}, hỏi trực tiếp <b>{p.posted_by}</b> — người đăng tin này.</div>
+              <div className="lt">SĐT chính chủ được che bớt</div>
+              <div className="ls">Bạn chỉ thấy số dạng che (VD 090****456). Cần số đầy đủ, hỏi <b>{p.posted_by}</b> — người đăng tin này.</div>
             </div>
           </div>
         )}
         {owner && (
           <div className="person">
-            <div className="av" style={{ background: "var(--brand)" }}>{initials(owner.name)}</div>
-            <div><div className="role">{p.source === "qua cò" ? "Môi giới (cò)" : "Chính chủ (F0)"}</div><div className="nm">{owner.name}</div></div>
-            <a className="call" href={`tel:${owner.phone}`}><Icon n="phone" />{owner.phone}</a>
+            <div className="av" style={{ background: "var(--brand)" }}>{initials(owner.name || "?")}</div>
+            <div><div className="role">{p.source === "qua cò" ? "Môi giới (cò)" : "Chính chủ (F0)"}</div><div className="nm">{owner.name || "(được giữ riêng)"}</div></div>
+            {owner.masked
+              ? <span className="call masked"><Icon n="phone" />{owner.phone}</span>
+              : <a className="call" href={`tel:${owner.phone}`}><Icon n="phone" />{owner.phone}</a>}
           </div>
         )}
         {interested.map((c, i) => (
           <div className="person" key={i}>
-            <div className="av" style={{ background: "var(--info)" }}>{initials(c.name)}</div>
-            <div><div className="role">Khách quan tâm</div><div className="nm">{c.name}</div></div>
-            <a className="call" href={`tel:${c.phone}`} style={{ borderColor: "var(--info)", color: "var(--info)" }}><Icon n="phone" />{c.phone}</a>
+            <div className="av" style={{ background: "var(--info)" }}>{initials(c.name || "?")}</div>
+            <div><div className="role">Khách quan tâm</div><div className="nm">{c.name || "(được giữ riêng)"}</div></div>
+            {c.masked
+              ? <span className="call masked" style={{ borderColor: "var(--info)", color: "var(--info)" }}><Icon n="phone" />{c.phone}</span>
+              : <a className="call" href={`tel:${c.phone}`} style={{ borderColor: "var(--info)", color: "var(--info)" }}><Icon n="phone" />{c.phone}</a>}
           </div>
         ))}
         <div className="person">
@@ -1654,7 +1692,7 @@ const readJSON = (k) => { try { return JSON.parse(localStorage.getItem(k)) || nu
 
 function AddForm({ initial, onSave, onCancel }) {
   const prefs = readJSON(PREFS_KEY) || {};
-  const empty = { title: "", type: "đất", area: "", frontage: "", direction: "",
+  const empty = { title: "", type: "đất nền", area: "", frontage: "", direction: "",
     khu: prefs.khu || "", address: "",
     price: "", price_per_m2: "",
     legal: prefs.legal || "sổ đỏ", land: prefs.land !== undefined ? prefs.land : "thổ cư",
@@ -1740,11 +1778,19 @@ function AddForm({ initial, onSave, onCancel }) {
   };
   const discardDraft = () => { localStorage.removeItem(DRAFT_KEY); setDraftInfo(null); };
 
+  const [dupWarn, setDupWarn] = useState(null); // danh sách tin có thể trùng
+  const [checking, setChecking] = useState(false);
+
   const buildPayload = () => {
     const contacts = [];
     if (f.ownerName || f.ownerPhone) contacts.push({ type: "đầu chủ", name: f.ownerName || "Đầu chủ", phone: f.ownerPhone });
     return { ...f, area: Number(f.area) || 0, frontage: f.frontage ? Number(f.frontage) : null,
       price: Number(f.price) || 0, price_per_m2: Number(f.price_per_m2) || 0, imgs: f.imgs, contacts };
+  };
+  const doSave = () => {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ khu: f.khu, source: f.source, legal: f.legal, land: f.land }));
+    localStorage.removeItem(DRAFT_KEY);
+    onSave(buildPayload());
   };
   const next = () => {
     if (step === 0 && (!f.title || !f.area)) { setErr("Cần nhập Tiêu đề và Diện tích trước khi tiếp tục"); return; }
@@ -1755,12 +1801,15 @@ function AddForm({ initial, onSave, onCancel }) {
     if (i > 0 && (!f.title || !f.area)) { setStep(0); setErr("Cần nhập Tiêu đề và Diện tích trước"); return; }
     setErr(""); setStep(i);
   };
-  const submit = () => {
+  const submit = async () => {
     if (!f.title || !f.area) { setStep(0); setErr("Cần nhập Tiêu đề và Diện tích"); return; }
-    // nhớ lựa chọn hay dùng cho lần nhập sau + xoá nháp
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ khu: f.khu, source: f.source, legal: f.legal, land: f.land }));
-    localStorage.removeItem(DRAFT_KEY);
-    onSave(buildPayload());
+    setChecking(true);
+    try {
+      const r = await api.checkDup({ phone: f.ownerPhone, address: f.address, khu: f.khu, lat: f.lat, lng: f.lng, exclude: isEdit ? initial.id : "" });
+      setChecking(false);
+      if (r.matches && r.matches.length) { setDupWarn(r.matches); return; }
+    } catch { setChecking(false); }
+    doSave();
   };
 
   return (
@@ -1891,9 +1940,34 @@ function AddForm({ initial, onSave, onCancel }) {
             : <button className="wback" onClick={onCancel}>Huỷ</button>}
           {step < 2
             ? <button className="wnext" onClick={next}>Tiếp tục<Icon n="chev" size={17} /></button>
-            : <button className="wnext" onClick={submit}><Icon n="check" size={17} />{isEdit ? "Lưu thay đổi" : "Lưu tin"}</button>}
+            : <button className="wnext" onClick={submit} disabled={checking}><Icon n="check" size={17} />{checking ? "Đang kiểm tra…" : (isEdit ? "Lưu thay đổi" : "Lưu tin")}</button>}
         </div>
       </div>
+
+      {dupWarn && (
+        <div className="ov" style={{ alignItems: "center" }} onClick={() => setDupWarn(null)}>
+          <div className="cfm" onClick={(e) => e.stopPropagation()}>
+            <div className="cfmt">⚠️ Có thể trùng tin đã có</div>
+            <div className="cfmm">
+              Hệ thống thấy {dupWarn.length} tin có dấu hiệu trùng. Kiểm tra trước khi lưu để tránh nhân đôi lô:
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8, textAlign: "left" }}>
+                {dupWarn.map((m) => (
+                  <div key={m.id} style={{ background: "var(--brand-t)", borderRadius: 10, padding: "9px 11px" }}>
+                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{m.title}</div>
+                    <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                      {m.reason}{m.posted_by ? ` · đăng bởi ${m.posted_by}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="cfmb">
+              <button className="wback" onClick={() => setDupWarn(null)}>Để tôi kiểm tra lại</button>
+              <button className="wnext" onClick={() => { setDupWarn(null); doSave(); }}>Vẫn lưu tin mới</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

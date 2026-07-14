@@ -23,6 +23,13 @@ export const api = {
   remove: (id) =>
     fetch(`${BASE}/api/properties/${id}`, { method: "DELETE", headers: h() }).then((r) => r.json()),
 
+  checkDup: (params) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ""));
+    return fetch(`${BASE}/api/properties/check-dup?${qs}`, { headers: h() }).then((r) => r.json());
+  },
+  favorite: (id, on) =>
+    fetch(`${BASE}/api/properties/${id}/favorite`, { method: on ? "POST" : "DELETE", headers: h() }).then((r) => r.json()),
+
   me: () => fetch(`${BASE}/api/auth/me`, { headers: h() }).then((r) => r.json()),
 
   listUsers: () => fetch(`${BASE}/api/users`, { headers: h() }).then((r) => r.json()),
