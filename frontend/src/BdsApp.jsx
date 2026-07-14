@@ -579,11 +579,9 @@ const fmtPriceWords = (v) => {
   if (tr) return `${tr} triệu`;
   return `${v.toLocaleString("vi-VN")} đồng`;
 };
-const fmtM2 = (v) => (v ? Math.round(v / 1e6) + " tr/m²" : "");
+const fmtM2 = (v) => { const m = Math.round((v || 0) / 1e6); return m >= 1 ? m + " tr/m²" : ""; };
 const initials = (n) => { const w = (n || "?").trim().split(" "); return (w[w.length - 1][0] || "?").toUpperCase(); };
 const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[đĐ]/g, "d").toLowerCase();
-const osmSrc = (lat, lng) =>
-  `https://www.openstreetmap.org/export/embed.html?bbox=${(lng - 0.012).toFixed(4)}%2C${(lat - 0.008).toFixed(4)}%2C${(lng + 0.012).toFixed(4)}%2C${(lat + 0.008).toFixed(4)}&layer=mapnik&marker=${lat}%2C${lng}`;
 const gmapLink = (p) =>
   p.lat && p.lng
     ? `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`
@@ -959,7 +957,7 @@ function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKh
                     {(p.legal || p.source) && <span className="tag"><Icon n="doc" size={12} />{[p.legal, p.land, p.source].filter(Boolean).join(" · ")}</span>}
                     {p.created_at && <span className="tago">{timeAgo(p.created_at)}</span>}
                   </div>
-                  <div className="price num">{fmtPrice(p.price)} <small>· {fmtM2(p.price_per_m2)}</small>
+                  <div className="price num">{fmtPrice(p.price)} {fmtM2(p.price_per_m2) && <small>· {fmtM2(p.price_per_m2)}</small>}
                     {p.posted_by && <span className="poster"><span className="pav">{initials(p.posted_by)}</span>{p.posted_by}</span>}
                   </div>
                 </div>
@@ -974,19 +972,56 @@ function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKh
 
 function MapView({ items, onOpen }) {
   const geo = items.filter((p) => p.lat && p.lng);
-  const [sel, setSel] = useState(geo[0] || null);
-  const center = sel || DONG_ANH;
+  const boxRef = useRef(null);
+  const layersRef = useRef(null);
+  const markersRef = useRef({});
+  const [sel, setSel] = useState(geo[0]?.id || null);
+  const [sat, setSat] = useState(false);
+
+  // Dựng bản đồ Leaflet với tất cả ghim (màu theo trạng thái). Dựng lại khi số tin thay đổi.
+  useEffect(() => {
+    const map = L.map(boxRef.current, { attributionControl: false }).setView([DONG_ANH.lat, DONG_ANH.lng], 13);
+    const osm = L.tileLayer(OSM_URL, { maxZoom: 19 }).addTo(map);
+    const satl = L.tileLayer(SAT_URL, { maxZoom: 19 });
+    layersRef.current = { map, osm, sat: satl };
+    const markers = {};
+    geo.forEach((p) => {
+      const m = L.marker([p.lat, p.lng], { icon: pinIcon(STATUS_HEX[p.status] || "#15528F") })
+        .addTo(map)
+        .bindPopup(`<b>${p.title}</b><br>${STATUS[p.status]?.label || ""} · ${fmtPrice(p.price)}`);
+      m.on("click", () => setSel(p.id));
+      markers[p.id] = m;
+    });
+    markersRef.current = markers;
+    if (geo.length) map.fitBounds(L.latLngBounds(geo.map((p) => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 16 });
+    setTimeout(() => map.invalidateSize(), 120);
+    return () => map.remove();
+  }, [geo.length]); // eslint-disable-line
+
+  const focus = (p) => {
+    setSel(p.id);
+    const ly = layersRef.current, m = markersRef.current[p.id];
+    if (ly && m) { ly.map.setView([p.lat, p.lng], 16, { animate: true }); m.openPopup(); }
+  };
+  const toggleSat = () => {
+    const ly = layersRef.current; if (!ly) return;
+    if (sat) { ly.map.removeLayer(ly.sat); ly.osm.addTo(ly.map); }
+    else { ly.map.removeLayer(ly.osm); ly.sat.addTo(ly.map); }
+    setSat(!sat);
+  };
+
   return (
     <div className="mapview">
-      <div className="bigmap">
-        <iframe title="bản đồ Đông Anh" src={osmSrc(center.lat, center.lng)} loading="lazy" />
+      <div className="bigmap" style={{ position: "relative" }}>
+        <div ref={boxRef} style={{ width: "100%", height: "100%" }} />
+        {geo.length > 0 && <button type="button" className="satbtn" onClick={toggleSat}>{sat ? "Bản đồ" : "Vệ tinh"}</button>}
       </div>
-      <div className="cnt num">{geo.length} tin có toạ độ · chạm để xem trên bản đồ</div>
+      <div className="cnt num">{geo.length} tin có toạ độ · chạm ghim hoặc tin để xem</div>
       <div className="mapstrip">
         {geo.map((p) => {
           const st = STATUS[p.status];
           return (
-            <div key={p.id} className={"mrow" + (sel?.id === p.id ? " on" : "")} onClick={() => setSel(p)}>
+            <div key={p.id} className={"mrow" + (sel === p.id ? " on" : "")} onClick={() => focus(p)}>
               <div className="pin"><Icon n="pin" size={18} /></div>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <p className="t" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.title}</p>
@@ -996,6 +1031,7 @@ function MapView({ items, onOpen }) {
             </div>
           );
         })}
+        {geo.length === 0 && <div className="cnt" style={{ padding: "18px 16px" }}>Chưa có tin nào có toạ độ để hiện trên bản đồ.</div>}
       </div>
     </div>
   );
@@ -1189,8 +1225,6 @@ function MembersView({ onBack, confirm }) {
 }
 
 function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
-  const [notif, setNotif] = useState(localStorage.getItem("notif") !== "off");
-  const toggleNotif = (v) => { setNotif(v); localStorage.setItem("notif", v ? "on" : "off"); };
   const [pwOpen, setPwOpen] = useState(false);
   const [oldPw, setOldPw] = useState(""); const [pw1, setPw1] = useState(""); const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState(null); // {ok, text}
@@ -1229,11 +1263,6 @@ function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
       )}
 
       <div className="setcard">
-        <div className="setrow">
-          <span className="sic"><Icon n="bell" size={17} /></span>
-          <div className="grow">Thông báo<div className="shint">Báo khi có tin mới trong kho</div></div>
-          <Toggle on={notif} onChange={toggleNotif} />
-        </div>
         <div className="setrow">
           <span className="sic"><Icon n="moon" size={17} /></span>
           <div className="grow">Giao diện tối<div className="shint">Dịu mắt khi dùng ban đêm</div></div>
@@ -1304,7 +1333,7 @@ function Detail({ p, onBack, onEdit, onDelete, onStatus }) {
 
       <div className="dhead">
         <h2 className="ttl">{p.title}</h2>
-        <div className="price num">{fmtPrice(p.price)} <small>· {fmtM2(p.price_per_m2)}</small></div>
+        <div className="price num">{fmtPrice(p.price)} {fmtM2(p.price_per_m2) && <small>· {fmtM2(p.price_per_m2)}</small>}</div>
       </div>
 
       <div className="sec">
@@ -1456,6 +1485,14 @@ const SAT_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imag
 const PIN_ICON = L.divIcon({
   className: "npin-wrap",
   html: '<div class="npin"></div><div class="npin-dot"></div>',
+  iconSize: [30, 42], iconAnchor: [15, 40],
+});
+
+// Ghim màu theo trạng thái cho tab Bản đồ (khớp màu chấm trạng thái trong app)
+const STATUS_HEX = { dang_ban: "#2E9E5A", quan_tam: "#7C5CD6", coc: "#C6892A", da_ban: "#96A0AC" };
+const pinIcon = (color) => L.divIcon({
+  className: "npin-wrap",
+  html: `<div class="npin" style="background:${color}"></div><div class="npin-dot"></div>`,
   iconSize: [30, 42], iconAnchor: [15, 40],
 });
 
