@@ -535,11 +535,12 @@ function PwInput(props) {
   );
 }
 
+// Thứ tự theo mức độ tra cứu nhiều: Đang bán > Quan tâm > Cọc > Đã bán (ít dùng, để cuối)
 const STATUS = {
   dang_ban: { label: "Đang bán", c: "var(--ok)" },
+  quan_tam: { label: "Quan tâm", c: "var(--info)" },
   coc: { label: "Cọc", c: "var(--warn)" },
   da_ban: { label: "Đã bán", c: "var(--off)" },
-  quan_tam: { label: "Quan tâm", c: "var(--info)" },
 };
 const TYPES = ["đất", "nhà", "căn hộ", "shop", "văn phòng"];
 const SOURCE = ["chính chủ", "qua cò"];
