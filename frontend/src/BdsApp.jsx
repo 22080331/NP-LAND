@@ -552,6 +552,18 @@ svg.ic{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;
 .budgetsel input{border:0;outline:none;background:none;font-size:16px;font-family:inherit;width:60px;color:var(--ink);font-weight:700}
 .budgetlbl{font-size:13px;color:var(--muted);white-space:nowrap}
 .budgetx{margin-left:auto;background:none;border:0;color:var(--faint);cursor:pointer;display:grid;place-items:center}
+/* Giai đoạn 5: máy tính tài chính */
+.loantable{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.ltrow{display:grid;grid-template-columns:0.6fr 1fr 1fr 1fr 1fr;gap:4px;padding:9px 10px;font-size:12px;
+  color:var(--ink);border-bottom:1px solid var(--line)}
+.ltrow:last-child{border-bottom:0}
+.ltrow.lthead{background:var(--brand-t);color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase}
+.cmpwrap{display:flex;flex-direction:column;gap:12px}
+.cmprow{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 13px}
+.cmphead{display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:700}
+.cmpbar{margin-top:7px;height:8px;background:var(--line);border-radius:5px;overflow:hidden}
+.cmpbar>span{display:block;height:100%;background:var(--brand);border-radius:5px}
+.cmpnote{font-size:12px;color:var(--muted);margin-top:6px}
 `;
 
 const P = {
@@ -665,6 +677,13 @@ const fmtBudget = (min, max) => {
 };
 
 const fmtPrice = (v) => (!v ? "—" : v >= 1e9 ? (v / 1e9).toFixed(v % 1e9 === 0 ? 0 : 1) + " tỷ" : Math.round(v / 1e6) + " tr");
+// Như fmtPrice nhưng giữ 1 số lẻ khi dưới 1 triệu — tránh hiện "0 tr" ở bảng lịch trả khi số tiền nhỏ
+const fmtPriceFine = (v) => {
+  if (!v) return "0 tr";
+  if (v >= 1e9) return (v / 1e9).toFixed(v % 1e9 === 0 ? 0 : 2) + " tỷ";
+  const tr = v / 1e6;
+  return (tr >= 10 ? Math.round(tr) : tr.toFixed(1)) + " tr";
+};
 const fmtPriceWords = (v) => {
   v = Number(v) || 0;
   if (!v) return "";
@@ -675,6 +694,82 @@ const fmtPriceWords = (v) => {
   return `${v.toLocaleString("vi-VN")} đồng`;
 };
 const fmtM2 = (v) => { const m = Math.round((v || 0) / 1e6); return m >= 1 ? m + " tr/m²" : ""; };
+const fmtVND = (v) => Math.round(v || 0).toLocaleString("vi-VN") + " đ";
+
+// ===== TOÁN TÀI CHÍNH (Giai đoạn 5) — công thức thuần, không gọi AI =====
+const MAX_LOAN_RATIO = 0.7; // tỷ lệ vay tối đa tham khảo (~70% giá trị BĐS)
+
+/**
+ * Lịch trả nợ theo tháng. method: "giam_dan" (gốc đều, lãi giảm dần) | "nien_kim" (trả đều mỗi tháng).
+ * Lãi ưu đãi áp dụng preferentialMonths tháng đầu, sau đó chuyển sang floatingRate.
+ */
+function buildLoanSchedule({ principal, months, preferentialRate, preferentialMonths, floatingRate, method }) {
+  let balance = principal;
+  const fixedPrincipal = principal / months;
+  let annuityPayment = 0;
+  const rows = [];
+  for (let m = 1; m <= months; m++) {
+    const annualRate = m <= preferentialMonths ? preferentialRate : floatingRate;
+    const r = annualRate / 100 / 12;
+    let principalPay, interestPay;
+    if (method === "nien_kim") {
+      if (m === 1 || m === preferentialMonths + 1) {
+        const remain = months - m + 1;
+        annuityPayment = r === 0 ? balance / remain : balance * r * Math.pow(1 + r, remain) / (Math.pow(1 + r, remain) - 1);
+      }
+      interestPay = balance * r;
+      principalPay = annuityPayment - interestPay;
+    } else {
+      principalPay = fixedPrincipal;
+      interestPay = balance * r;
+    }
+    principalPay = Math.min(principalPay, balance);
+    balance = Math.max(0, balance - principalPay);
+    rows.push({ month: m, principal: principalPay, interest: interestPay, payment: principalPay + interestPay, balance });
+  }
+  return rows;
+}
+
+// Gộp lịch trả theo năm (tổng gốc/lãi/trả trong năm + dư nợ cuối năm)
+function yearlySchedule(rows) {
+  const years = [];
+  for (let i = 0; i < rows.length; i += 12) {
+    const chunk = rows.slice(i, i + 12);
+    years.push({
+      year: years.length + 1,
+      principal: chunk.reduce((s, r) => s + r.principal, 0),
+      interest: chunk.reduce((s, r) => s + r.interest, 0),
+      payment: chunk.reduce((s, r) => s + r.payment, 0),
+      balance: chunk[chunk.length - 1].balance,
+    });
+  }
+  return years;
+}
+
+// Tài sản ròng kịch bản "mua có vay" sau N năm (đơn giản hoá, xem ghi chú disclaimer trong UI)
+function netWorthBorrow({ price, ownCapital, downPayment, loanSchedule, growthRate, savingsRate, years }) {
+  const propertyValue = price * Math.pow(1 + growthRate / 100, years);
+  const monthsElapsed = Math.min(years * 12, loanSchedule.length);
+  const remainingDebt = monthsElapsed > 0 ? loanSchedule[monthsElapsed - 1].balance : loanSchedule[0]?.balance || 0;
+  const idleCapital = Math.max(0, ownCapital - downPayment) * Math.pow(1 + savingsRate / 100, years);
+  return propertyValue - remainingDebt + idleCapital;
+}
+const netWorthSavings = (capital, rate, years) => capital * Math.pow(1 + rate / 100, years);
+const netWorthCash = (price, growthRate, years, idleCapital = 0, savingsRate = 0) =>
+  price * Math.pow(1 + growthRate / 100, years) + idleCapital * Math.pow(1 + savingsRate / 100, years);
+
+// Điểm hoà vốn: đất phải tăng bao nhiêu %/năm để "mua có vay" bằng "gửi tiết kiệm toàn bộ vốn" (dò nhị phân)
+function breakEvenGrowth({ price, ownCapital, downPayment, loanParams, savingsRate, years }) {
+  const target = netWorthSavings(ownCapital, savingsRate, years);
+  let lo = -20, hi = 50;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    const sched = buildLoanSchedule({ ...loanParams, principal: price - downPayment });
+    const nw = netWorthBorrow({ price, ownCapital, downPayment, loanSchedule: sched, growthRate: mid, savingsRate, years });
+    if (nw < target) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
 const initials = (n) => { const w = (n || "?").trim().split(" "); return (w[w.length - 1][0] || "?").toUpperCase(); };
 const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[đĐ]/g, "d").toLowerCase();
 const gmapLink = (p) =>
@@ -973,6 +1068,10 @@ export default function App() {
     },
   });
 
+  const [calcPrice, setCalcPrice] = useState(0); // giá điền sẵn khi mở máy tính từ 1 lô cụ thể
+  const [calcFrom, setCalcFrom] = useState("settings"); // quay lại đúng chỗ đã mở máy tính
+  const openCalc = (price, from) => { setCalcPrice(price || 0); setCalcFrom(from); setView("calc"); };
+
   if (!authed)
     return (
       <div className={"bds" + (dark ? " dark" : "")}><style>{STYLES}</style>
@@ -1006,9 +1105,10 @@ export default function App() {
       {view === "customers" && <CustomersView demands={demands} onOpen={openDemand} />}
       {view === "demand" && selDemand && <DemandDetail d={selDemand} onBack={() => setView("customers")} onEdit={() => { setEditDemand(selDemand); setView("adddemand"); }} onDelete={() => deleteDemand(selDemand)} onContacted={() => markContacted(selDemand)} onStage={(st) => setDemandStage(selDemand, st)} onRefresh={reloadDemands} onOpenProp={open} />}
       {view === "adddemand" && <DemandForm initial={editDemand} onSave={saveDemand} onCancel={() => { setEditDemand(null); setView(editDemand ? "demand" : "customers"); }} />}
-      {view === "settings" && <SettingsView user={user} isAdmin={role === "admin"} onMembers={() => setView("members")} dark={dark} onDark={toggleDark} onLogout={logout} />}
+      {view === "settings" && <SettingsView user={user} isAdmin={role === "admin"} onMembers={() => setView("members")} onCalc={() => openCalc(0, "settings")} dark={dark} onDark={toggleDark} onLogout={logout} />}
       {view === "members" && role === "admin" && <MembersView onBack={() => setView("settings")} confirm={setConfirm} />}
-      {view === "detail" && sel && <Detail p={sel} onBack={() => setView("list")} onEdit={() => startEdit(sel)} onDelete={() => deleteProp(sel)} onStatus={(st) => quickStatus(sel, st)} onFav={() => toggleFav(sel)} />}
+      {view === "calc" && <FinanceCalc initialPrice={calcPrice} onBack={() => setView(calcFrom)} />}
+      {view === "detail" && sel && <Detail p={sel} onBack={() => setView("list")} onEdit={() => startEdit(sel)} onDelete={() => deleteProp(sel)} onStatus={(st) => quickStatus(sel, st)} onFav={() => toggleFav(sel)} onCalc={() => openCalc(sel.price, "detail")} />}
       {view === "add" && <AddForm initial={editing} onSave={saveProp} onCancel={() => { setEditing(null); setView(editing ? "detail" : "list"); }} />}
 
       {matchAlert && (
@@ -1627,6 +1727,220 @@ function DemandForm({ initial, onSave, onCancel }) {
   );
 }
 
+// ===== GIAI ĐOẠN 5: MÁY TÍNH TÀI CHÍNH =====
+function FinanceCalc({ initialPrice, onBack }) {
+  const [tab, setTab] = useState("loan");
+  const [price, setPrice] = useState(initialPrice || 0);
+  const [ownCapital, setOwnCapital] = useState(initialPrice ? Math.round(initialPrice * 0.4) : 0);
+
+  return (
+    <div style={{ paddingBottom: 30 }}>
+      <div className="dbar">
+        <button className="rnd" style={{ position: "static" }} onClick={onBack}><Icon n="back" /></button>
+        <div className="dbartitle">Máy tính tài chính</div>
+      </div>
+      <div className="filters" style={{ paddingTop: 10 }}>
+        <span className={"chip" + (tab === "loan" ? " on" : "")} onClick={() => setTab("loan")}>Vay ngân hàng</span>
+        <span className={"chip" + (tab === "scenario" ? " on" : "")} onClick={() => setTab("scenario")}>So sánh kịch bản</span>
+      </div>
+
+      <div className="sec" style={{ marginTop: 4 }}>
+        <p className="mlabel">Thông tin chung</p>
+        <PriceField label="Giá bất động sản" value={price} onChange={setPrice} />
+        <PriceField label="Vốn tự có" value={ownCapital} onChange={setOwnCapital} />
+      </div>
+
+      {tab === "loan" ? <LoanCalcTab price={price} ownCapital={ownCapital} /> : <ScenarioTab price={price} ownCapital={ownCapital} />}
+    </div>
+  );
+}
+
+function LoanCalcTab({ price, ownCapital }) {
+  const [prefRate, setPrefRate] = useState(7.5);
+  const [prefMonths, setPrefMonths] = useState(12);
+  const [floatRate, setFloatRate] = useState(11);
+  const [years, setYears] = useState(20);
+  const [method, setMethod] = useState("giam_dan");
+
+  const loanAmount = Math.max(0, price - ownCapital);
+  const loanRatio = price > 0 ? loanAmount / price : 0;
+  const months = Math.max(1, Math.round(years * 12));
+  const schedule = useMemo(() => buildLoanSchedule({
+    principal: loanAmount, months, preferentialRate: prefRate, preferentialMonths: Math.min(prefMonths, months),
+    floatingRate: floatRate, method,
+  }), [loanAmount, months, prefRate, prefMonths, floatRate, method]);
+  const years_ = useMemo(() => yearlySchedule(schedule), [schedule]);
+  const totalInterest = schedule.reduce((s, r) => s + r.interest, 0);
+  const firstPayment = schedule[0]?.payment || 0;
+  const firstFloatPayment = schedule[Math.min(prefMonths, schedule.length - 1)]?.payment || 0;
+
+  return (
+    <>
+      <div className="sec">
+        <p className="mlabel">Điều kiện vay</p>
+        {loanRatio > MAX_LOAN_RATIO && (
+          <div className="lerr" style={{ textAlign: "left", marginBottom: 10 }}>
+            ⚠️ Số tiền vay đang chiếm {(loanRatio * 100).toFixed(0)}% giá trị BĐS — thường vượt tỷ lệ vay tối đa ngân hàng cho phép (~{MAX_LOAN_RATIO * 100}%).
+          </div>
+        )}
+        <div className="kv" style={{ marginBottom: 10 }}>
+          <div><div className="k">Số tiền cần vay</div><div className="v num" style={{ color: "var(--brand-d)", fontSize: 16 }}>{fmtPrice(loanAmount)}</div></div>
+          <div><div className="k">Tỷ lệ vay</div><div className="v num">{(loanRatio * 100).toFixed(0)}%</div></div>
+        </div>
+        <div className="r2">
+          <div className="field"><label>Lãi suất ưu đãi (%/năm)</label>
+            <input type="number" inputMode="decimal" value={prefRate} onChange={(e) => setPrefRate(Number(e.target.value) || 0)} /></div>
+          <div className="field"><label>Số tháng ưu đãi</label>
+            <input type="number" inputMode="numeric" value={prefMonths} onChange={(e) => setPrefMonths(Number(e.target.value) || 0)} /></div>
+        </div>
+        <div className="r2">
+          <div className="field"><label>Lãi thả nổi sau ưu đãi (%/năm)</label>
+            <input type="number" inputMode="decimal" value={floatRate} onChange={(e) => setFloatRate(Number(e.target.value) || 0)} /></div>
+          <div className="field"><label>Thời hạn vay (năm)</label>
+            <input type="number" inputMode="numeric" value={years} onChange={(e) => setYears(Number(e.target.value) || 1)} /></div>
+        </div>
+        <div className="field"><label>Cách trả</label>
+          <div className="r2">
+            <button type="button" className={"togbtn" + (method === "giam_dan" ? " on" : "")} onClick={() => setMethod("giam_dan")}>Dư nợ giảm dần</button>
+            <button type="button" className={"togbtn" + (method === "nien_kim" ? " on" : "")} onClick={() => setMethod("nien_kim")}>Niên kim (trả đều)</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="sec">
+        <div className="scorerow">
+          <div className="scorecell">
+            <div className="scoreval num" style={{ fontSize: 18, color: "var(--brand-d)" }}>{fmtVND(firstPayment)}</div>
+            <div className="scorelbl">Trả tháng đầu</div>
+          </div>
+          {prefMonths < months && (
+            <div className="scorecell">
+              <div className="scoreval num" style={{ fontSize: 18, color: "var(--warn)" }}>{fmtVND(firstFloatPayment)}</div>
+              <div className="scorelbl">Trả khi hết ưu đãi</div>
+            </div>
+          )}
+          <div className="scorecell">
+            <div className="scoreval num" style={{ fontSize: 18 }}>{fmtPriceFine(totalInterest)}</div>
+            <div className="scorelbl">Tổng lãi cả khoản vay</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="sec">
+        <p className="mlabel">Lịch trả theo năm</p>
+        <div className="loantable">
+          <div className="ltrow lthead"><span>Năm</span><span>Gốc</span><span>Lãi</span><span>Tổng trả</span><span>Dư nợ còn</span></div>
+          {years_.map((y) => (
+            <div className="ltrow" key={y.year}>
+              <span>{y.year}</span>
+              <span>{fmtPriceFine(y.principal)}</span>
+              <span>{fmtPriceFine(y.interest)}</span>
+              <span style={{ fontWeight: 700 }}>{fmtPriceFine(y.payment)}</span>
+              <span>{fmtPriceFine(y.balance)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="scorenote">Ước tính tham khảo theo công thức lãi đơn hàng tháng, chưa gồm phí bảo hiểm/phí trả trước hạn của từng ngân hàng.</div>
+      </div>
+    </>
+  );
+}
+
+function ScenarioTab({ price, ownCapital }) {
+  const [savingsRate, setSavingsRate] = useState(5.5);
+  const [growthRate, setGrowthRate] = useState(10);
+  const [years, setYears] = useState(10);
+  const [prefRate, setPrefRate] = useState(7.5);
+  const [prefMonths, setPrefMonths] = useState(12);
+  const [floatRate, setFloatRate] = useState(11);
+  const [loanYears, setLoanYears] = useState(20);
+
+  const downPayment = Math.min(ownCapital, price);
+  const loanAmount = Math.max(0, price - downPayment);
+  const months = Math.max(1, Math.round(loanYears * 12));
+  const canBuyCash = ownCapital >= price && price > 0;
+
+  const schedule = useMemo(() => buildLoanSchedule({
+    principal: loanAmount, months, preferentialRate: prefRate, preferentialMonths: Math.min(prefMonths, months),
+    floatingRate: floatRate, method: "nien_kim",
+  }), [loanAmount, months, prefRate, prefMonths, floatRate]);
+
+  const savingsFV = netWorthSavings(ownCapital, savingsRate, years);
+  const cashFV = canBuyCash ? netWorthCash(price, growthRate, years, ownCapital - price, savingsRate) : null;
+  const borrowFV = price > 0 ? netWorthBorrow({ price, ownCapital, downPayment, loanSchedule: schedule, growthRate, savingsRate, years }) : 0;
+  const breakEven = price > 0 ? breakEvenGrowth({
+    price, ownCapital, downPayment,
+    loanParams: { months, preferentialRate: prefRate, preferentialMonths: Math.min(prefMonths, months), floatingRate: floatRate, method: "nien_kim" },
+    savingsRate, years,
+  }) : null;
+
+  const rows = [
+    { label: "Gửi tiết kiệm", fv: savingsFV, note: `Toàn bộ vốn ${fmtPrice(ownCapital)} gửi ngân hàng ${savingsRate}%/năm` },
+    canBuyCash
+      ? { label: "Mua mặt (trả hết)", fv: cashFV, note: `Đất tăng ${growthRate}%/năm, không vay` }
+      : { label: "Mua mặt (trả hết)", fv: null, note: "Vốn tự có chưa đủ giá BĐS — không thể mua thẳng" },
+    { label: "Mua có vay", fv: borrowFV, note: `Vay ${fmtPrice(loanAmount)}, đất tăng ${growthRate}%/năm` },
+  ];
+  const maxFV = Math.max(savingsFV, cashFV || 0, borrowFV, 1);
+
+  return (
+    <>
+      <div className="sec">
+        <p className="mlabel">Giả định</p>
+        <div className="r2">
+          <div className="field"><label>Lãi tiết kiệm (%/năm)</label>
+            <input type="number" inputMode="decimal" value={savingsRate} onChange={(e) => setSavingsRate(Number(e.target.value) || 0)} /></div>
+          <div className="field"><label>Đất kỳ vọng tăng (%/năm)</label>
+            <input type="number" inputMode="decimal" value={growthRate} onChange={(e) => setGrowthRate(Number(e.target.value) || 0)} /></div>
+        </div>
+        <div className="field"><label>Số năm giữ</label>
+          <input type="number" inputMode="numeric" value={years} onChange={(e) => setYears(Number(e.target.value) || 1)} /></div>
+        <p className="mlabel" style={{ marginTop: 14 }}>Nếu vay (dùng cho kịch bản "Mua có vay")</p>
+        <div className="r2">
+          <div className="field"><label>Lãi ưu đãi (%/năm)</label>
+            <input type="number" inputMode="decimal" value={prefRate} onChange={(e) => setPrefRate(Number(e.target.value) || 0)} /></div>
+          <div className="field"><label>Số tháng ưu đãi</label>
+            <input type="number" inputMode="numeric" value={prefMonths} onChange={(e) => setPrefMonths(Number(e.target.value) || 0)} /></div>
+        </div>
+        <div className="r2">
+          <div className="field"><label>Lãi thả nổi (%/năm)</label>
+            <input type="number" inputMode="decimal" value={floatRate} onChange={(e) => setFloatRate(Number(e.target.value) || 0)} /></div>
+          <div className="field"><label>Thời hạn vay (năm)</label>
+            <input type="number" inputMode="numeric" value={loanYears} onChange={(e) => setLoanYears(Number(e.target.value) || 1)} /></div>
+        </div>
+      </div>
+
+      <div className="sec">
+        <p className="mlabel">Tài sản ròng ước tính sau {years} năm</p>
+        <div className="cmpwrap">
+          {rows.map((r) => (
+            <div className="cmprow" key={r.label}>
+              <div className="cmphead"><span>{r.label}</span><span className="num" style={{ fontWeight: 800 }}>{r.fv == null ? "—" : fmtPrice(r.fv)}</span></div>
+              {r.fv != null && <div className="cmpbar"><span style={{ width: `${Math.max(4, (r.fv / maxFV) * 100)}%` }} /></div>}
+              <div className="cmpnote">{r.note}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {breakEven != null && (
+        <div className="sec">
+          <p className="mlabel">Điểm hoà vốn</p>
+          <div className="pitchbox" style={{ background: "var(--brand-t)" }}>
+            Đất cần tăng khoảng <b>{breakEven.toFixed(1)}%/năm</b> thì phương án <b>mua có vay</b> mới sinh lời ngang bằng việc <b>gửi tiết kiệm</b> toàn bộ vốn tự có ({fmtPrice(ownCapital)}) trong {years} năm.
+            {breakEven > growthRate
+              ? " Với mức tăng giá bạn đang giả định ở trên, mua vay đang kém hơn gửi tiết kiệm."
+              : " Với mức tăng giá bạn đang giả định ở trên, mua vay đang lời hơn gửi tiết kiệm."}
+          </div>
+        </div>
+      )}
+      <div className="scorenote" style={{ padding: "0 16px" }}>
+        Đây là ước tính tham khảo dựa trên giả định bạn nhập, không phải tư vấn tài chính hay cam kết lợi nhuận thực tế. Chưa tính thuế, phí giao dịch, chi phí sửa chữa hoặc rủi ro thanh khoản của bất động sản.
+      </div>
+    </>
+  );
+}
+
 function MembersView({ onBack, confirm }) {
   const [users, setUsers] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -1728,7 +2042,7 @@ function MembersView({ onBack, confirm }) {
   );
 }
 
-function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
+function SettingsView({ user, isAdmin, onMembers, onCalc, dark, onDark, onLogout }) {
   const [pwOpen, setPwOpen] = useState(false);
   const [oldPw, setOldPw] = useState(""); const [pw1, setPw1] = useState(""); const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState(null); // {ok, text}
@@ -1765,6 +2079,14 @@ function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
           </div>
         </div>
       )}
+
+      <div className="setcard">
+        <div className="setrow" style={{ cursor: "pointer" }} onClick={onCalc}>
+          <span className="sic"><Icon n="chart" size={17} /></span>
+          <div className="grow">Máy tính tài chính<div className="shint">Tính khoản vay, so sánh mua mặt/vay/gửi tiết kiệm</div></div>
+          <span style={{ color: "var(--faint)" }}><Icon n="chev" size={16} /></span>
+        </div>
+      </div>
 
       <div className="setcard">
         <div className="setrow">
@@ -1853,7 +2175,7 @@ function ScoreCard({ p }) {
   );
 }
 
-function Detail({ p, onBack, onEdit, onDelete, onStatus, onFav }) {
+function Detail({ p, onBack, onEdit, onDelete, onStatus, onFav, onCalc }) {
   const [sheet, setSheet] = useState(false);
   const [stSheet, setStSheet] = useState(false);
   const gallery = ((p.imgs && p.imgs.length ? p.imgs : (p.img ? [p.img] : [])) || []).map(resolveUrl);
@@ -1898,6 +2220,7 @@ function Detail({ p, onBack, onEdit, onDelete, onStatus, onFav }) {
           {p.updated_at && <span>· Sửa lần cuối {timeAgo(p.updated_at)}</span>}
           {p.status_at && <span>· Đổi trạng thái {timeAgo(p.status_at)}</span>}
         </div>
+        <button className="miniadd" style={{ marginTop: 10 }} onClick={onCalc}><Icon n="chart" size={15} />Tính khoản vay cho lô này</button>
       </div>
 
       <div className="sec">
