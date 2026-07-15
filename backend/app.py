@@ -203,6 +203,10 @@ class Property(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime)   # lần sửa gần nhất
     status_at = db.Column(db.DateTime)    # lần đổi trạng thái gần nhất
+    # Giai đoạn 4 — ngữ cảnh để chấm điểm
+    road_width = db.Column(db.Float)      # đường trước đất (m)
+    nearby = db.Column(db.String)         # gần gì: chợ/trường/KCN… (mô tả ngắn)
+    can_business = db.Column(db.Boolean)  # kinh doanh được / có vỉa hè
     contacts = db.relationship("Contact", backref="property", cascade="all, delete-orphan")
 
     def imgs_list(self):
@@ -232,6 +236,7 @@ class Property(db.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "status_at": self.status_at.isoformat() if self.status_at else None,
+            "road_width": self.road_width, "nearby": self.nearby, "can_business": self.can_business,
         }
 
 # ============================ AUTH ============================
@@ -348,7 +353,7 @@ def geocode(address, khu):
 # ======================= PROPERTIES =======================
 FIELDS = ["title", "type", "area", "frontage", "direction", "khu", "address",
           "lat", "lng", "price", "price_per_m2", "legal", "land", "planning", "division",
-          "source", "status", "img"]
+          "source", "status", "img", "road_width", "nearby", "can_business"]
 
 def apply_images(p, d):
     """Nhận 'imgs' (list URL) từ payload, lưu JSON và tự đặt ảnh cover."""
@@ -621,6 +626,86 @@ def del_interaction(user, did, lid):
     db.session.commit()
     return jsonify({"ok": True})
 
+# ======================= CHẤM ĐIỂM LÔ (công thức) =======================
+LEGAL_SCORE = {"sổ đỏ": 100, "sổ hồng": 100, "sổ chung": 60, "vi bằng": 35, "chưa có": 15}
+PURPOSE_WEIGHTS = {
+    "để ở":       {"price": 0.35, "legal": 0.40, "location": 0.25},
+    "kinh doanh": {"price": 0.25, "legal": 0.30, "location": 0.45},
+    "đầu tư":     {"price": 0.45, "legal": 0.35, "location": 0.20},
+}
+
+def _khu_median_ppm2(khu, exclude_id=None):
+    import statistics
+    vals = [p.price_per_m2 for p in Property.query.filter_by(is_archived=False, khu=khu).all()
+            if p.price_per_m2 and (not exclude_id or p.id != exclude_id)]
+    return (statistics.median(vals), len(vals)) if len(vals) >= 2 else (None, len(vals))
+
+def _score_property(p):
+    """Chấm điểm 0-100 bằng CÔNG THỨC (không phải AI): giá vs trung vị thôn + pháp lý + vị trí."""
+    median, n = _khu_median_ppm2(p.khu, p.id)
+    price_score = None
+    if median and p.price_per_m2:
+        ratio = p.price_per_m2 / median
+        price_score = max(20, min(100, (1.2 - ratio) / 0.4 * 80 + 20))
+    legal_score = LEGAL_SCORE.get(p.legal, 50)
+    loc = 50
+    if p.road_width:
+        loc += 25 if p.road_width >= 5 else (15 if p.road_width >= 3 else 5)
+    if p.can_business:
+        loc += 15
+    if p.nearby and p.nearby.strip():
+        loc += 10
+    location_score = max(0, min(100, loc))
+    comps = {"price": price_score, "legal": legal_score, "location": location_score}
+    by_purpose = {}
+    for purpose, w in PURPOSE_WEIGHTS.items():
+        num = wsum = 0
+        for k, wk in w.items():
+            if comps[k] is not None:
+                num += comps[k] * wk; wsum += wk
+        by_purpose[purpose] = round(num / wsum) if wsum else None
+    return {"components": {k: (round(v) if v is not None else None) for k, v in comps.items()},
+            "by_purpose": by_purpose, "khu_median_ppm2": median, "khu_sample": n}
+
+@app.get("/api/properties/<pid>/score")
+@token_required
+def property_score(user, pid):
+    p = Property.query.get(pid)
+    if not p: return jsonify({"error": "Không tìm thấy"}), 404
+    return jsonify(_score_property(p))
+
+@app.post("/api/properties/<pid>/pitch")
+@token_required
+def property_pitch(user, pid):
+    """Claude DIỄN GIẢI (tầng 2): soạn lời chào khách dựa trên dữ liệu thật + điểm công thức."""
+    p = Property.query.get(pid)
+    if not p: return jsonify({"error": "Không tìm thấy"}), 404
+    if not os.getenv("CLAUDE_API_KEY"):
+        return jsonify({"error": "Chưa cấu hình CLAUDE_API_KEY — vào Render/Backend .env để bật tính năng AI"}), 400
+    sc = _score_property(p)
+    facts = {
+        "tiêu đề": p.title, "loại": p.type, "diện tích": p.area, "mặt tiền": p.frontage,
+        "hướng": p.direction, "thôn": p.khu, "địa chỉ": p.address,
+        "giá": p.price, "giá/m2": p.price_per_m2, "pháp lý": p.legal, "loại đất": p.land,
+        "quy hoạch": p.planning, "đường rộng(m)": p.road_width, "gần": p.nearby,
+        "kinh doanh được": p.can_business, "trung vị giá/m2 thôn": sc["khu_median_ppm2"],
+    }
+    prompt = f"""Bạn là môi giới BĐS Đông Anh. Dưới đây là DỮ LIỆU THẬT của một lô đất (JSON):
+{json.dumps(facts, ensure_ascii=False)}
+Điểm đánh giá theo công thức (0-100) cho 3 mục đích: {json.dumps(sc['by_purpose'], ensure_ascii=False)}.
+
+Viết một đoạn CHÀO KHÁCH ngắn (4-6 câu, giọng thân thiện, tiếng Việt).
+RÀNG BUỘC nghiêm ngặt: CHỈ nói theo dữ liệu trên, TUYỆT ĐỐI không bịa thêm số liệu/tiện ích.
+Trường nào trống hoặc không chắc thì nói rõ "cần xác minh tại xã/thực địa", không tự suy diễn.
+Nêu điểm mạnh nhất theo dữ liệu và gợi ý lô hợp mục đích nào."""
+    try:
+        msg = claude.messages.create(model="claude-opus-4-8", max_tokens=700,
+                                     messages=[{"role": "user", "content": prompt}])
+        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+        return jsonify({"pitch": text, "score": sc})
+    except Exception as e:
+        return jsonify({"error": f"Không tạo được: {e}"}), 500
+
 # ======================= AI BÓC TÁCH =======================
 @app.post("/api/ai-parse")
 @token_required
@@ -737,6 +822,13 @@ def migrate():
             conn.execute(text("ALTER TABLE properties ADD COLUMN updated_at TIMESTAMP"))
         if "status_at" not in cols:
             conn.execute(text("ALTER TABLE properties ADD COLUMN status_at TIMESTAMP"))
+        # Giai đoạn 4 — trường ngữ cảnh để chấm điểm
+        if "road_width" not in cols:
+            conn.execute(text("ALTER TABLE properties ADD COLUMN road_width FLOAT"))
+        if "nearby" not in cols:
+            conn.execute(text("ALTER TABLE properties ADD COLUMN nearby VARCHAR"))
+        if "can_business" not in cols:
+            conn.execute(text("ALTER TABLE properties ADD COLUMN can_business BOOLEAN"))
         # 'quan_tam' không còn là trạng thái chung của lô -> gộp về 'dang_ban'
         conn.execute(text("UPDATE properties SET status='dang_ban' WHERE status='quan_tam'"))
         # Giai đoạn 3: thêm phễu 'stage' cho khách, backfill từ 'status' cũ

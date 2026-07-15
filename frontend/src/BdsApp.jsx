@@ -529,6 +529,29 @@ svg.ic{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;
 .tlnote{font-size:13px;color:var(--muted);margin-top:2px}
 .tlprop{font-size:12px;color:var(--brand-d);margin-top:2px}
 .tlmeta{font-size:11.5px;color:var(--faint);margin-top:2px}
+/* nút bật/tắt trong form */
+.togbtn{border:1px solid var(--line);background:var(--bg);color:var(--muted);border-radius:10px;
+  padding:11px 12px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;text-align:left}
+.togbtn.on{border-color:var(--ok);background:rgba(46,158,90,.1);color:var(--ok)}
+/* thẻ chấm điểm */
+.scorerow{display:flex;gap:10px}
+.scorecell{flex:1;background:var(--brand-t);border-radius:12px;padding:12px 8px;text-align:center}
+.scoreval{font-size:26px;font-weight:800;line-height:1}
+.scorelbl{font-size:12px;color:var(--muted);margin-top:4px}
+.scorebreak{margin-top:12px;display:flex;flex-direction:column;gap:7px}
+.sbrow{display:flex;align-items:center;gap:8px}
+.sbl{font-size:12.5px;color:var(--muted);width:58px;flex:0 0 auto}
+.sbbar{flex:1;height:8px;background:var(--line);border-radius:5px;overflow:hidden}
+.sbbar>span{display:block;height:100%;border-radius:5px}
+.sbv{font-size:12.5px;font-weight:700;width:26px;text-align:right;flex:0 0 auto}
+.scorenote{font-size:11.5px;color:var(--faint);margin-top:10px;line-height:1.5}
+.pitchbox{margin-top:12px;background:var(--brand-t);border-radius:12px;padding:13px;font-size:14px;
+  line-height:1.6;color:var(--ink);white-space:pre-wrap}
+/* tìm theo ngân sách */
+.budgetsel{display:flex;align-items:center;gap:8px;padding:0 12px !important}
+.budgetsel input{border:0;outline:none;background:none;font-size:16px;font-family:inherit;width:60px;color:var(--ink);font-weight:700}
+.budgetlbl{font-size:13px;color:var(--muted);white-space:nowrap}
+.budgetx{margin-left:auto;background:none;border:0;color:var(--faint);cursor:pointer;display:grid;place-items:center}
 `;
 
 const P = {
@@ -823,6 +846,7 @@ export default function App() {
   const [fPrice, setFPrice] = useState(0);
   const [fSort, setFSort] = useState("new");
   const [fFav, setFFav] = useState(false);
+  const [fBudget, setFBudget] = useState(""); // ngân sách khách (tỷ) -> lọc ±15%
   const [q, setQ] = useState("");
   // Tin khớp SĐT liên hệ (đầu chủ/khách) — tra qua server vì contact bị ẩn phía client với người không đăng tin
   const [phoneIds, setPhoneIds] = useState(() => new Set());
@@ -843,6 +867,7 @@ export default function App() {
       if (fKhu && p.khu !== fKhu) return false;
       if (fSource && p.source !== fSource) return false;
       if (fPrice > 0 && !((p.price || 0) >= pr.min && (p.price || 0) < pr.max)) return false;
+      if (fBudget) { const b = Number(fBudget) * 1e9; if (b > 0 && !((p.price || 0) >= b * 0.85 && (p.price || 0) <= b * 1.15)) return false; }
       if (fFav && !p.is_fav) return false;
       if (q) {
         const textMatch = (p.title + " " + p.address + " " + (p.khu || "") + " " + (p.desc || "")).toLowerCase().includes(q.toLowerCase());
@@ -857,7 +882,7 @@ export default function App() {
       area_desc: (a, b) => (b.area || 0) - (a.area || 0),
     };
     return arr.sort(by[fSort] || by.new);
-  }, [props, fStatus, fType, fKhu, fSource, fPrice, fSort, fFav, q, phoneIds]);
+  }, [props, fStatus, fType, fKhu, fSource, fPrice, fSort, fFav, fBudget, q, phoneIds]);
 
   const open = (p) => { setSel(p); setView("detail"); };
   const startEdit = (p) => { setEditing(p); setView("add"); };
@@ -974,7 +999,7 @@ export default function App() {
           fStatus={fStatus} setFStatus={setFStatus} fType={fType} setFType={setFType}
           fKhu={fKhu} setFKhu={setFKhu} fSource={fSource} setFSource={setFSource}
           fPrice={fPrice} setFPrice={setFPrice} fSort={fSort} setFSort={setFSort}
-          fFav={fFav} setFFav={setFFav} onFav={toggleFav} onOpen={open} />
+          fFav={fFav} setFFav={setFFav} fBudget={fBudget} setFBudget={setFBudget} onFav={toggleFav} onOpen={open} />
       )}
       {view === "map" && <MapView items={props} onOpen={open} />}
       {view === "stats" && <StatsView items={props} user={user} onBack={() => setView("list")} />}
@@ -1044,7 +1069,7 @@ export default function App() {
   );
 }
 
-function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKhu, setFKhu, fSource, setFSource, fPrice, setFPrice, fSort, setFSort, fFav, setFFav, onFav, onOpen }) {
+function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKhu, setFKhu, fSource, setFSource, fPrice, setFPrice, fSort, setFSort, fFav, setFFav, fBudget, setFBudget, onFav, onOpen }) {
   return (
     <>
       <div className="search">
@@ -1094,8 +1119,16 @@ function List({ items, total, q, setQ, fStatus, setFStatus, fType, setFType, fKh
           </select>
         </div>
       </div>
+      <div className="selrow">
+        <div className="sel budgetsel">
+          <span className="budgetlbl">Khách có</span>
+          <input inputMode="decimal" value={fBudget} onChange={(e) => setFBudget(e.target.value)} placeholder="VD: 8" />
+          <span className="budgetlbl">tỷ {fBudget ? "→ lọc ±15%" : ""}</span>
+          {fBudget && <button className="budgetx" onClick={() => setFBudget("")}><Icon n="x" size={14} /></button>}
+        </div>
+      </div>
 
-      <div className="cnt num">{items.length} / {total} tin</div>
+      <div className="cnt num">{items.length} / {total} tin{fBudget ? ` khớp ~${fBudget} tỷ` : ""}</div>
 
       {items.length === 0 ? (
         <div className="empty"><Icon n="search" size={38} /><div>Không có tin nào khớp bộ lọc</div></div>
@@ -1767,6 +1800,59 @@ function SettingsView({ user, isAdmin, onMembers, dark, onDark, onLogout }) {
   );
 }
 
+// Thẻ đánh giá nhanh (chấm điểm bằng công thức) + soạn lời chào (AI)
+function ScoreCard({ p }) {
+  const [sc, setSc] = useState(null);
+  const [pitch, setPitch] = useState(null);
+  const [loadingPitch, setLoadingPitch] = useState(false);
+  const [pitchErr, setPitchErr] = useState("");
+  useEffect(() => { api.score(p.id).then(setSc).catch(() => setSc(null)); }, [p.id]);
+  if (!sc || !sc.by_purpose) return null;
+  const COMP = { price: "Giá", legal: "Pháp lý", location: "Vị trí" };
+  const doPitch = async () => {
+    setLoadingPitch(true); setPitchErr("");
+    try { const r = await api.pitch(p.id); if (r.pitch) setPitch(r.pitch); else setPitchErr(r.error || "Không tạo được"); }
+    catch { setPitchErr("Không kết nối được máy chủ"); }
+    finally { setLoadingPitch(false); }
+  };
+  return (
+    <div className="sec">
+      <p className="mlabel">Đánh giá nhanh (theo công thức)</p>
+      <div className="scorerow">
+        {Object.entries(sc.by_purpose).map(([purpose, val]) => (
+          <div className="scorecell" key={purpose}>
+            <div className="scoreval num" style={{ color: val >= 75 ? "var(--ok)" : val >= 55 ? "var(--warn)" : "var(--off)" }}>{val ?? "—"}</div>
+            <div className="scorelbl">{purpose}</div>
+          </div>
+        ))}
+      </div>
+      <div className="scorebreak">
+        {Object.entries(COMP).map(([k, label]) => (
+          <div className="sbrow" key={k}>
+            <span className="sbl">{label}</span>
+            <span className="sbbar"><span style={{ width: `${sc.components[k] ?? 0}%`, background: sc.components[k] == null ? "var(--line)" : "var(--brand)" }} /></span>
+            <span className="sbv num">{sc.components[k] ?? "—"}</span>
+          </div>
+        ))}
+      </div>
+      <div className="scorenote">
+        {sc.khu_median_ppm2
+          ? `Điểm giá so với trung vị ${fmtM2(sc.khu_median_ppm2)} của ${sc.khu_sample} lô cùng thôn.`
+          : "Chưa đủ lô cùng thôn để chấm điểm giá — sẽ chính xác hơn khi kho có nhiều tin."}
+        {" "}Đây là ước tính theo công thức, không thay tư vấn thực địa.
+      </div>
+      {!pitch ? (
+        <button className="pwbtn" style={{ marginTop: 12, width: "100%" }} onClick={doPitch} disabled={loadingPitch}>
+          <Icon n="sparkle" size={16} /> {loadingPitch ? "Đang soạn…" : "Soạn lời chào khách (AI)"}
+        </button>
+      ) : (
+        <div className="pitchbox">{pitch}</div>
+      )}
+      {pitchErr && <div className="setmsg">{pitchErr}</div>}
+    </div>
+  );
+}
+
 function Detail({ p, onBack, onEdit, onDelete, onStatus, onFav }) {
   const [sheet, setSheet] = useState(false);
   const [stSheet, setStSheet] = useState(false);
@@ -1834,8 +1920,13 @@ function Detail({ p, onBack, onEdit, onDelete, onStatus, onFav }) {
           <div><div className="k">Quy hoạch</div><div className="v">{p.planning || "—"}</div></div>
           <div><div className="k">Tình trạng</div><div className="v">{p.division || "—"}</div></div>
           <div><div className="k">Nguồn tin</div><div className="v">{p.source || "—"}</div></div>
+          {p.road_width ? <div><div className="k">Đường trước đất</div><div className="v num">{p.road_width} m</div></div> : null}
+          {p.can_business ? <div><div className="k">Kinh doanh</div><div className="v">Được (mặt tiền/vỉa hè)</div></div> : null}
+          {p.nearby ? <div style={{ gridColumn: "1/3" }}><div className="k">Gần tiện ích</div><div className="v">{p.nearby}</div></div> : null}
         </div>
       </div>
+
+      <ScoreCard p={p} />
 
       {p.desc && <div className="sec"><p className="mlabel">Mô tả</p><div className="desc">{p.desc}</div></div>}
 
@@ -2142,6 +2233,7 @@ function AddForm({ initial, onSave, onCancel }) {
     legal: prefs.legal || "sổ đỏ", land: prefs.land !== undefined ? prefs.land : "thổ cư",
     planning: "", division: "",
     source: prefs.source || "chính chủ", status: "dang_ban", lat: null, lng: null,
+    road_width: "", nearby: "", can_business: false,
     desc: "", imgs: [], ownerName: "", ownerPhone: "" };
   const fromInitial = () => {
     if (!initial) return empty;
@@ -2229,7 +2321,9 @@ function AddForm({ initial, onSave, onCancel }) {
     const contacts = [];
     if (f.ownerName || f.ownerPhone) contacts.push({ type: "đầu chủ", name: f.ownerName || "Đầu chủ", phone: f.ownerPhone });
     return { ...f, area: Number(f.area) || 0, frontage: f.frontage ? Number(f.frontage) : null,
-      price: Number(f.price) || 0, price_per_m2: Number(f.price_per_m2) || 0, imgs: f.imgs, contacts };
+      price: Number(f.price) || 0, price_per_m2: Number(f.price_per_m2) || 0,
+      road_width: f.road_width ? Number(f.road_width) : null, can_business: !!f.can_business,
+      imgs: f.imgs, contacts };
   };
   const doSave = () => {
     localStorage.setItem(PREFS_KEY, JSON.stringify({ khu: f.khu, source: f.source, legal: f.legal, land: f.land }));
@@ -2337,6 +2431,17 @@ function AddForm({ initial, onSave, onCancel }) {
             <div className="field"><label>Nguồn tin</label>
               <select value={f.source} onChange={(e) => set("source", e.target.value)}>
                 {SOURCE.map((s) => <option key={s}>{s}</option>)}</select></div>
+            <div className="r2">
+              <div className="field"><label>Đường trước đất (m)</label>
+                <input type="number" inputMode="decimal" value={f.road_width || ""} placeholder="VD: 5" onChange={(e) => set("road_width", e.target.value)} /></div>
+              <div className="field" style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                <label>Kinh doanh được?</label>
+                <button type="button" className={"togbtn" + (f.can_business ? " on" : "")} onClick={() => set("can_business", !f.can_business)}>
+                  {f.can_business ? "Có (mặt tiền/vỉa hè)" : "Không / chưa rõ"}
+                </button></div>
+            </div>
+            <div className="field"><label>Gần tiện ích gì (chợ/trường/KCN…)</label>
+              <input value={f.nearby || ""} placeholder="VD: cách chợ 300m, gần trường cấp 2" onChange={(e) => set("nearby", e.target.value)} /></div>
           </>
         )}
 

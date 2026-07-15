@@ -31,6 +31,8 @@ export const api = {
     fetch(`${BASE}/api/properties/${id}/favorite`, { method: on ? "POST" : "DELETE", headers: h() }).then((r) => r.json()),
   propertyDemands: (id) =>
     fetch(`${BASE}/api/properties/${id}/demands`, { headers: h() }).then((r) => r.json()),
+  score: (id) => fetch(`${BASE}/api/properties/${id}/score`, { headers: h() }).then((r) => r.json()),
+  pitch: (id) => fetch(`${BASE}/api/properties/${id}/pitch`, { method: "POST", headers: h() }).then((r) => r.json()),
 
   demands: () => fetch(`${BASE}/api/demands`, { headers: h() }).then((r) => r.json()),
   demand: (id) => fetch(`${BASE}/api/demands/${id}`, { headers: h() }).then((r) => r.json()),
