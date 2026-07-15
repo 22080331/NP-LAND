@@ -104,7 +104,8 @@ class Demand(db.Model):
     area_min = db.Column(db.Float)
     area_max = db.Column(db.Float)
     note = db.Column(db.Text)
-    status = db.Column(db.String, default="dang_tim")  # dang_tim | da_chot | tam_dung
+    status = db.Column(db.String, default="dang_tim")  # (cũ) — nay dùng 'stage' thay thế
+    stage = db.Column(db.String, default="hoi")        # phễu: hoi|xem|suy_nghi|dam_phan|coc|cong_chung|tam_dung|huy
     posted_by = db.Column(db.String, db.ForeignKey("users.id"))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_contact_at = db.Column(db.DateTime)
@@ -112,8 +113,14 @@ class Demand(db.Model):
     def khu_list(self):
         return [k.strip() for k in (self.khus or "").split(",") if k.strip()]
 
+    def is_active(self):
+        """Khách còn đang tìm (chưa cọc/chốt/dừng) — mới tính ghép kèo & nhắc follow-up."""
+        return (self.stage or "hoi") in ("hoi", "xem", "suy_nghi", "dam_phan")
+
     def matches(self, p):
         """Lô p có khớp nhu cầu này không (giá trong ngân sách, đúng thôn, đúng diện tích)."""
+        if not self.is_active():
+            return False
         if p.is_archived or p.status == "da_ban":
             return False
         if self.budget_max and p.price and p.price > self.budget_max:
@@ -129,17 +136,43 @@ class Demand(db.Model):
             return False
         return True
 
-    def dict(self, match_count=None):
+    def dict(self, match_count=None, logs=None):
         poster = User.query.get(self.posted_by) if self.posted_by else None
-        return {
+        d = {
             "id": self.id, "name": self.name, "phone": self.phone, "purpose": self.purpose,
             "budget_min": self.budget_min, "budget_max": self.budget_max,
             "khus": self.khu_list(), "area_min": self.area_min, "area_max": self.area_max,
-            "note": self.note, "status": self.status,
+            "note": self.note, "stage": self.stage or "hoi",
             "posted_by": poster.name if poster else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_contact_at": self.last_contact_at.isoformat() if self.last_contact_at else None,
             "match_count": match_count,
+        }
+        if logs is not None:
+            d["logs"] = logs
+        return d
+
+class Interaction(db.Model):
+    """Lịch sử tương tác với khách — dùng chung cả văn phòng."""
+    __tablename__ = "interactions"
+    id = db.Column(db.String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    demand_id = db.Column(db.String, db.ForeignKey("demands.id"))
+    user_id = db.Column(db.String, db.ForeignKey("users.id"))
+    kind = db.Column(db.String)          # ghi_chu | goi | dan_xem | bao_gia
+    note = db.Column(db.Text)
+    property_id = db.Column(db.String)   # lô liên quan (nếu có)
+    price = db.Column(db.BigInteger)     # giá đã báo (nếu kind=bao_gia)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def dict(self):
+        u = User.query.get(self.user_id) if self.user_id else None
+        prop = Property.query.get(self.property_id) if self.property_id else None
+        return {
+            "id": self.id, "kind": self.kind, "note": self.note,
+            "user": u.name if u else None,
+            "property_id": self.property_id, "property_title": prop.title if prop else None,
+            "price": self.price,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 class Property(db.Model):
@@ -468,7 +501,7 @@ def del_fav(user, pid):
 
 # ======================= NHU CẦU KHÁCH (ghép kèo) =======================
 DEMAND_FIELDS = ["name", "phone", "purpose", "budget_min", "budget_max", "khus",
-                 "area_min", "area_max", "note", "status"]
+                 "area_min", "area_max", "note", "stage"]
 
 def _apply_demand(d, data):
     for f in DEMAND_FIELDS:
@@ -484,7 +517,7 @@ def list_demands(user):
     active_props = Property.query.filter_by(is_archived=False).all()
     out = []
     for d in Demand.query.order_by(Demand.created_at.desc()).all():
-        cnt = sum(1 for p in active_props if d.matches(p)) if d.status == "dang_tim" else 0
+        cnt = sum(1 for p in active_props if d.matches(p)) if d.is_active() else 0
         out.append(d.dict(match_count=cnt))
     return jsonify({"demands": out})
 
@@ -506,7 +539,8 @@ def get_demand(user, did):
     d = Demand.query.get(did)
     if not d: return jsonify({"error": "Không tìm thấy"}), 404
     matched = [p for p in Property.query.filter_by(is_archived=False).all() if d.matches(p)]
-    return jsonify({"demand": d.dict(match_count=len(matched)),
+    logs = [i.dict() for i in Interaction.query.filter_by(demand_id=did).order_by(Interaction.created_at.desc()).all()]
+    return jsonify({"demand": d.dict(match_count=len(matched), logs=logs),
                     "properties": [p.dict(user) for p in matched]})
 
 @app.put("/api/demands/<did>")
@@ -541,8 +575,51 @@ def property_matches(user, pid):
     """Khách đang tìm mà lô này khớp — dùng để báo 'khớp N khách đang chờ' khi lưu lô."""
     p = Property.query.get(pid)
     if not p: return jsonify({"error": "Không tìm thấy"}), 404
-    matched = [d for d in Demand.query.filter_by(status="dang_tim").all() if d.matches(p)]
+    matched = [d for d in Demand.query.all() if d.matches(p)]
     return jsonify({"demands": [d.dict() for d in matched]})
+
+@app.get("/api/demands/check-dup")
+@token_required
+def demand_check_dup(user):
+    """Chặn 2 người ôm cùng 1 khách: cảnh báo nếu SĐT khách đã có trong kho."""
+    phone_digits = "".join(ch for ch in (request.args.get("phone") or "") if ch.isdigit())
+    exclude = request.args.get("exclude")
+    if not phone_digits:
+        return jsonify({"matches": []})
+    matches = []
+    for d in Demand.query.all():
+        if exclude and d.id == exclude:
+            continue
+        dd = "".join(ch for ch in (d.phone or "") if ch.isdigit())
+        if dd and dd == phone_digits:
+            poster = User.query.get(d.posted_by) if d.posted_by else None
+            matches.append({"id": d.id, "name": d.name,
+                            "posted_by": poster.name if poster else None,
+                            "stage": d.stage or "hoi"})
+    return jsonify({"matches": matches})
+
+@app.post("/api/demands/<did>/logs")
+@token_required
+def add_interaction(user, did):
+    d = Demand.query.get(did)
+    if not d: return jsonify({"error": "Không tìm thấy"}), 404
+    data = request.get_json() or {}
+    i = Interaction(demand_id=did, user_id=user.id,
+                    kind=data.get("kind", "ghi_chu"), note=data.get("note"),
+                    property_id=data.get("property_id"),
+                    price=int(data["price"]) if data.get("price") else None)
+    db.session.add(i)
+    # Ghi tương tác cũng coi như đã liên hệ hôm nay
+    d.last_contact_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"log": i.dict()}), 201
+
+@app.delete("/api/demands/<did>/logs/<lid>")
+@token_required
+def del_interaction(user, did, lid):
+    Interaction.query.filter_by(id=lid, demand_id=did).delete()
+    db.session.commit()
+    return jsonify({"ok": True})
 
 # ======================= AI BÓC TÁCH =======================
 @app.post("/api/ai-parse")
@@ -651,6 +728,10 @@ def migrate():
         cols = [c["name"] for c in sa_inspect(db.engine).get_columns("properties")]
     except Exception:
         return
+    try:
+        dcols = [c["name"] for c in sa_inspect(db.engine).get_columns("demands")]
+    except Exception:
+        dcols = []
     with db.engine.begin() as conn:
         if "updated_at" not in cols:
             conn.execute(text("ALTER TABLE properties ADD COLUMN updated_at TIMESTAMP"))
@@ -658,6 +739,12 @@ def migrate():
             conn.execute(text("ALTER TABLE properties ADD COLUMN status_at TIMESTAMP"))
         # 'quan_tam' không còn là trạng thái chung của lô -> gộp về 'dang_ban'
         conn.execute(text("UPDATE properties SET status='dang_ban' WHERE status='quan_tam'"))
+        # Giai đoạn 3: thêm phễu 'stage' cho khách, backfill từ 'status' cũ
+        if dcols and "stage" not in dcols:
+            conn.execute(text("ALTER TABLE demands ADD COLUMN stage VARCHAR"))
+            conn.execute(text("UPDATE demands SET stage='hoi' WHERE status='dang_tim' OR status IS NULL"))
+            conn.execute(text("UPDATE demands SET stage='cong_chung' WHERE status='da_chot'"))
+            conn.execute(text("UPDATE demands SET stage='tam_dung' WHERE status='tam_dung'"))
 
 with app.app_context():
     db.create_all()

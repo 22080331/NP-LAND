@@ -511,6 +511,24 @@ svg.ic{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;
 .khuchips{display:flex;flex-wrap:wrap;gap:6px;max-height:160px;overflow-y:auto;padding:2px}
 .khuchips .chip{border-color:var(--line);background:var(--bg);color:var(--muted)}
 .khuchips .chip.on{background:#E3B93C;color:#1E2C3F;border-color:#E3B93C}
+.chip.chipwarn{border-color:#E0A93B;color:#9A6B12}
+.chip.chipwarn.on{background:#E0A93B;color:#1E2C3F}
+/* phễu bán */
+.funnel{display:flex;flex-wrap:wrap;gap:6px}
+.fstep{border:1px solid var(--line);background:var(--bg);color:var(--muted);border-radius:9px;
+  padding:8px 11px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit}
+.fstep.done{border-color:var(--brand);color:var(--brand-d)}
+.fstep.on{color:#fff;font-weight:700}
+.miniadd{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--brand);color:var(--brand-d);
+  background:none;border-radius:9px;padding:5px 10px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit}
+/* timeline tương tác */
+.timeline{display:flex;flex-direction:column;gap:2px}
+.tlrow{display:flex;gap:10px;padding:6px 0}
+.tldot{width:9px;height:9px;border-radius:50%;background:var(--brand);margin-top:5px;flex:0 0 auto}
+.tlhead{font-size:13.5px;color:var(--ink)}
+.tlnote{font-size:13px;color:var(--muted);margin-top:2px}
+.tlprop{font-size:12px;color:var(--brand-d);margin-top:2px}
+.tlmeta{font-size:11.5px;color:var(--faint);margin-top:2px}
 `;
 
 const P = {
@@ -599,8 +617,22 @@ const timeAgo = (iso) => {
 const LEGAL = ["sổ đỏ", "sổ hồng", "sổ chung", "vi bằng", "chưa có"];
 const LAND = ["thổ cư", "thổ cư một phần", "nông nghiệp"];
 const PURPOSES = ["để ở", "kinh doanh", "đầu tư"];
-const DSTATUS = { dang_tim: { label: "Đang tìm", c: "var(--ok)" }, da_chot: { label: "Đã chốt", c: "var(--off)" }, tam_dung: { label: "Tạm dừng", c: "var(--warn)" } };
-const dstatusOf = (k) => DSTATUS[k] || DSTATUS.dang_tim;
+// Phễu bán: 6 bước tiến triển + 2 trạng thái dừng
+const FUNNEL = [
+  { k: "hoi", label: "Hỏi", c: "#7C5CD6" },
+  { k: "xem", label: "Đã xem", c: "#2E7CD6" },
+  { k: "suy_nghi", label: "Suy nghĩ", c: "#C6892A" },
+  { k: "dam_phan", label: "Đàm phán", c: "#D6742E" },
+  { k: "coc", label: "Cọc", c: "#2E9E5A" },
+  { k: "cong_chung", label: "Công chứng", c: "#1E8A47" },
+];
+const STAGE_OFF = [{ k: "tam_dung", label: "Tạm dừng", c: "#96A0AC" }, { k: "huy", label: "Huỷ", c: "#C0453B" }];
+const ALL_STAGES = [...FUNNEL, ...STAGE_OFF];
+const stageOf = (k) => ALL_STAGES.find((s) => s.k === k) || FUNNEL[0];
+const isActiveStage = (k) => ["hoi", "xem", "suy_nghi", "dam_phan"].includes(k || "hoi");
+// số ngày kể từ mốc; null nếu chưa có
+const daysSince = (iso) => (iso ? Math.floor((Date.now() - new Date(iso)) / 86400000) : null);
+const LOG_KINDS = { ghi_chu: "Ghi chú", goi: "Gọi điện", dan_xem: "Dẫn xem", bao_gia: "Báo giá" };
 const fmtBudget = (min, max) => {
   const f = (v) => (v >= 1e9 ? (v / 1e9).toFixed(v % 1e9 === 0 ? 0 : 1) + " tỷ" : Math.round(v / 1e6) + " tr");
   if (min && max) return `${f(min)} – ${f(max)}`;
@@ -857,6 +889,9 @@ export default function App() {
   const markContacted = async (d) => {
     try { const r = await api.demandContacted(d.id); if (r.last_contact_at) { const upd = { ...d, last_contact_at: r.last_contact_at }; setDemands((ds) => ds.map((x) => (x.id === d.id ? upd : x))); setSelDemand((s) => (s && s.id === d.id ? upd : s)); } } catch {}
   };
+  const setDemandStage = async (d, stage) => {
+    try { const r = await api.updateDemand(d.id, { stage }); if (r.demand) { setDemands((ds) => ds.map((x) => (x.id === d.id ? r.demand : x))); setSelDemand((s) => (s && s.id === d.id ? r.demand : s)); } } catch {}
+  };
 
   // Bật/tắt "theo dõi" (bookmark cá nhân) — cập nhật lạc quan rồi gọi API
   const toggleFav = async (p) => {
@@ -944,7 +979,7 @@ export default function App() {
       {view === "map" && <MapView items={props} onOpen={open} />}
       {view === "stats" && <StatsView items={props} user={user} onBack={() => setView("list")} />}
       {view === "customers" && <CustomersView demands={demands} onOpen={openDemand} />}
-      {view === "demand" && selDemand && <DemandDetail d={selDemand} onBack={() => setView("customers")} onEdit={() => { setEditDemand(selDemand); setView("adddemand"); }} onDelete={() => deleteDemand(selDemand)} onContacted={() => markContacted(selDemand)} onOpenProp={open} />}
+      {view === "demand" && selDemand && <DemandDetail d={selDemand} onBack={() => setView("customers")} onEdit={() => { setEditDemand(selDemand); setView("adddemand"); }} onDelete={() => deleteDemand(selDemand)} onContacted={() => markContacted(selDemand)} onStage={(st) => setDemandStage(selDemand, st)} onRefresh={reloadDemands} onOpenProp={open} />}
       {view === "adddemand" && <DemandForm initial={editDemand} onSave={saveDemand} onCancel={() => { setEditDemand(null); setView(editDemand ? "demand" : "customers"); }} />}
       {view === "settings" && <SettingsView user={user} isAdmin={role === "admin"} onMembers={() => setView("members")} dark={dark} onDark={toggleDark} onLogout={logout} />}
       {view === "members" && role === "admin" && <MembersView onBack={() => setView("settings")} confirm={setConfirm} />}
@@ -1254,17 +1289,29 @@ function StatsView({ items, user, onBack }) {
 }
 
 // ===== KHÁCH (nhu cầu) =====
+const FOLLOWUP_DAYS = 7; // quá số ngày này chưa liên hệ -> cần chăm
+const needsFollowup = (d) => {
+  if (!isActiveStage(d.stage)) return false;
+  const days = daysSince(d.last_contact_at);
+  return days === null || days >= FOLLOWUP_DAYS;
+};
+
 function CustomersView({ demands, onOpen }) {
-  const [f, setF] = useState("dang_tim"); // lọc theo trạng thái
-  const list = demands.filter((d) => !f || d.status === f);
+  const [f, setF] = useState("active"); // active | care | done | all
+  const list = demands.filter((d) => {
+    if (f === "all") return true;
+    if (f === "active") return isActiveStage(d.stage);
+    if (f === "care") return needsFollowup(d);
+    if (f === "done") return d.stage === "cong_chung" || d.stage === "coc";
+    return true;
+  });
+  const careCount = demands.filter(needsFollowup).length;
+  const F = { active: "Đang theo đuổi", care: `Cần chăm${careCount ? ` (${careCount})` : ""}`, done: "Cọc / Chốt", all: "Tất cả" };
   return (
     <>
       <div className="filters" style={{ paddingTop: 12 }}>
-        <span className={"chip" + (!f ? " on" : "")} onClick={() => setF("")}>Tất cả</span>
-        {Object.entries(DSTATUS).map(([k, v]) => (
-          <span key={k} className={"chip" + (f === k ? " on" : "")} onClick={() => setF(k)}>
-            <span className="dot" style={{ background: v.c }} />{v.label}
-          </span>
+        {Object.entries(F).map(([k, v]) => (
+          <span key={k} className={"chip" + (f === k ? " on" : "") + (k === "care" && careCount ? " chipwarn" : "")} onClick={() => setF(k)}>{v}</span>
         ))}
       </div>
       <div className="cnt num">{list.length} khách</div>
@@ -1273,18 +1320,24 @@ function CustomersView({ demands, onOpen }) {
       ) : (
         <div className="list">
           {list.map((d) => {
-            const ds = dstatusOf(d.status);
+            const st = stageOf(d.stage);
+            const days = daysSince(d.last_contact_at);
+            const care = needsFollowup(d);
             return (
               <div className="ccard" key={d.id} onClick={() => onOpen(d)}>
                 <div className="cav">{initials(d.name)}</div>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="cnm">{d.name}
-                    <span className="cst" style={{ color: ds.c }}><span className="dot" style={{ background: ds.c }} />{ds.label}</span>
+                    <span className="cst" style={{ color: st.c }}><span className="dot" style={{ background: st.c }} />{st.label}</span>
                   </div>
                   <div className="cmeta">{d.purpose || "—"} · {fmtBudget(d.budget_min, d.budget_max)}</div>
-                  <div className="cmeta">{d.khus?.length ? d.khus.join(", ") : "mọi thôn"}{d.area_min || d.area_max ? ` · ${d.area_min || 0}–${d.area_max || "?"} m²` : ""}</div>
+                  <div className="cmeta">
+                    {care
+                      ? <span style={{ color: "var(--warn)", fontWeight: 700 }}>⏰ {days === null ? "chưa liên hệ lần nào" : `${days} ngày chưa liên hệ`}</span>
+                      : (d.khus?.length ? d.khus.join(", ") : "mọi thôn")}
+                  </div>
                 </div>
-                {d.status === "dang_tim" && d.match_count > 0 && <span className="cmatch">🎯 {d.match_count}</span>}
+                {isActiveStage(d.stage) && d.match_count > 0 && <span className="cmatch">🎯 {d.match_count}</span>}
                 <Icon n="chev" />
               </div>
             );
@@ -1295,10 +1348,17 @@ function CustomersView({ demands, onOpen }) {
   );
 }
 
-function DemandDetail({ d, onBack, onEdit, onDelete, onContacted, onOpenProp }) {
+function DemandDetail({ d, onBack, onEdit, onDelete, onContacted, onStage, onRefresh, onOpenProp }) {
   const [matched, setMatched] = useState(null);
-  useEffect(() => { api.demand(d.id).then((r) => setMatched(r.properties || [])).catch(() => setMatched([])); }, [d.id]);
-  const ds = dstatusOf(d.status);
+  const [logs, setLogs] = useState(null);
+  const [showLog, setShowLog] = useState(false);
+  const st = stageOf(d.stage);
+  const days = daysSince(d.last_contact_at);
+  const care = needsFollowup(d);
+
+  const load = () => api.demand(d.id).then((r) => { setMatched(r.properties || []); setLogs(r.demand?.logs || []); }).catch(() => { setMatched([]); setLogs([]); });
+  useEffect(() => { load(); }, [d.id]);
+
   return (
     <div style={{ paddingBottom: 40 }}>
       <div className="dbar">
@@ -1315,7 +1375,7 @@ function DemandDetail({ d, onBack, onEdit, onDelete, onContacted, onOpenProp }) 
           <div className="cav" style={{ width: 46, height: 46, fontSize: 17 }}>{initials(d.name)}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 18, fontWeight: 800 }}>{d.name}</div>
-            <div className="cst" style={{ color: ds.c, fontSize: 12.5 }}><span className="dot" style={{ background: ds.c }} />{ds.label}</div>
+            <div className="cst" style={{ color: st.c, fontSize: 12.5 }}><span className="dot" style={{ background: st.c }} />{st.label}</div>
           </div>
           {d.phone && <a className="call" href={`tel:${d.phone}`}><Icon n="phone" />{d.phone}</a>}
         </div>
@@ -1326,32 +1386,107 @@ function DemandDetail({ d, onBack, onEdit, onDelete, onContacted, onOpenProp }) 
           <div><div className="k">Diện tích</div><div className="v num">{d.area_min || d.area_max ? `${d.area_min || 0}–${d.area_max || "?"} m²` : "không yêu cầu"}</div></div>
         </div>
         {d.note && <div style={{ marginTop: 10 }}><div className="k">Ghi chú</div><div className="v">{d.note}</div></div>}
-        <div style={{ fontSize: 12, color: "var(--faint)", marginTop: 10 }}>
+        <div style={{ fontSize: 12, marginTop: 10, color: care ? "var(--warn)" : "var(--faint)", fontWeight: care ? 700 : 400 }}>
+          {care && "⏰ "}
           {d.created_at && <>Thêm {timeAgo(d.created_at)}</>}
-          {d.last_contact_at ? <> · Liên hệ lần cuối {timeAgo(d.last_contact_at)}</> : <> · <b style={{ color: "var(--warn)" }}>chưa liên hệ lần nào</b></>}
+          {d.last_contact_at ? <> · Liên hệ lần cuối {timeAgo(d.last_contact_at)}{care && days !== null ? ` (${days} ngày)` : ""}</> : <> · chưa liên hệ lần nào</>}
         </div>
-        <button className="pwbtn" style={{ marginTop: 12, width: "100%" }} onClick={onContacted}>
-          <Icon n="check" size={16} /> Đánh dấu đã liên hệ hôm nay
-        </button>
       </div>
 
+      {/* Phễu bán */}
+      <div className="sec">
+        <p className="mlabel">Giai đoạn (chạm để đổi)</p>
+        <div className="funnel">
+          {FUNNEL.map((s, i) => {
+            const curIdx = FUNNEL.findIndex((x) => x.k === d.stage);
+            const done = curIdx >= 0 && i <= curIdx;
+            return (
+              <button key={s.k} className={"fstep" + (d.stage === s.k ? " on" : "") + (done ? " done" : "")}
+                style={d.stage === s.k ? { background: s.c, borderColor: s.c } : {}} onClick={() => onStage(s.k)}>{s.label}</button>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          {STAGE_OFF.map((s) => (
+            <button key={s.k} className={"fstep" + (d.stage === s.k ? " on" : "")}
+              style={d.stage === s.k ? { background: s.c, borderColor: s.c } : {}} onClick={() => onStage(s.k)}>{s.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Lô khớp */}
       <div className="sec">
         <p className="mlabel">Lô đang có khớp nhu cầu {matched ? `(${matched.length})` : ""}</p>
         {matched === null ? <div className="cnt">Đang tìm…</div>
           : matched.length === 0 ? <div className="cnt" style={{ padding: "8px 0" }}>Chưa có lô nào trong kho khớp nhu cầu này.</div>
           : matched.map((p) => {
-              const st = statusOf(p.status);
+              const ps = statusOf(p.status);
               return (
                 <div className="mrow" key={p.id} onClick={() => onOpenProp(p)} style={{ marginBottom: 8 }}>
                   <div className="pin"><Icon n="home" size={18} /></div>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <p className="t" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.title}</p>
-                    <p className="m"><span style={{ color: st.c, fontWeight: 700 }}>●</span> {st.label} · {p.khu} · {fmtPrice(p.price)}</p>
+                    <p className="m"><span style={{ color: ps.c, fontWeight: 700 }}>●</span> {ps.label} · {p.khu} · {fmtPrice(p.price)}</p>
                   </div>
                   <button className="go"><Icon n="chev" /></button>
                 </div>
               );
             })}
+      </div>
+
+      {/* Lịch sử tương tác */}
+      <div className="sec">
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <p className="mlabel" style={{ flex: 1, margin: 0 }}>Lịch sử tương tác</p>
+          <button className="miniadd" onClick={() => setShowLog(true)}><Icon n="plus" size={15} />Ghi lại</button>
+        </div>
+        {logs === null ? <div className="cnt">Đang tải…</div>
+          : logs.length === 0 ? <div className="cnt" style={{ padding: "8px 0" }}>Chưa có tương tác nào. Ghi lại mỗi lần gọi/dẫn xem để cả phòng cùng biết.</div>
+          : <div className="timeline">
+              {logs.map((l) => (
+                <div className="tlrow" key={l.id}>
+                  <div className="tldot" />
+                  <div style={{ flex: 1 }}>
+                    <div className="tlhead"><b>{LOG_KINDS[l.kind] || l.kind}</b>{l.price ? ` · ${fmtPrice(l.price)}` : ""}</div>
+                    {l.note && <div className="tlnote">{l.note}</div>}
+                    {l.property_title && <div className="tlprop">🏠 {l.property_title}</div>}
+                    <div className="tlmeta">{l.user || "—"} · {l.created_at ? timeAgo(l.created_at) : ""}</div>
+                  </div>
+                </div>
+              ))}
+            </div>}
+      </div>
+
+      {showLog && <LogSheet demandId={d.id} onClose={() => setShowLog(false)} onSaved={() => { setShowLog(false); load(); onRefresh && onRefresh(); }} />}
+    </div>
+  );
+}
+
+function LogSheet({ demandId, onClose, onSaved }) {
+  const [kind, setKind] = useState("goi");
+  const [note, setNote] = useState("");
+  const [price, setPrice] = useState("");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try { await api.addLog(demandId, { kind, note: note.trim(), price: price ? Math.round(Number(price) * 1e9) : null }); onSaved(); }
+    catch { setSaving(false); }
+  };
+  return (
+    <div className="ov" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <h3>Ghi lại tương tác</h3>
+        <div className="filters" style={{ padding: "0 0 12px" }}>
+          {Object.entries(LOG_KINDS).map(([k, v]) => (
+            <span key={k} className={"chip" + (kind === k ? " on" : "")} onClick={() => setKind(k)}>{v}</span>
+          ))}
+        </div>
+        {kind === "bao_gia" && (
+          <div className="field"><label>Giá đã báo (tỷ)</label><input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="VD: 3.2" /></div>
+        )}
+        <div className="field"><label>Nội dung</label><textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="VD: Dẫn khách xem lô Đông Hội, khách chê xa chợ…" autoFocus /></div>
+        <button className="pwbtn" style={{ width: "100%" }} onClick={save} disabled={saving}>{saving ? "Đang lưu…" : "Lưu tương tác"}</button>
       </div>
     </div>
   );
@@ -1363,20 +1498,31 @@ function DemandForm({ initial, onSave, onCancel }) {
     name: initial.name || "", phone: initial.phone || "", purpose: initial.purpose || "để ở",
     budgetTy: initial.budget_min ? initial.budget_min / 1e9 : "", budgetTyMax: initial.budget_max ? initial.budget_max / 1e9 : "",
     khus: initial.khus || [], area_min: initial.area_min || "", area_max: initial.area_max || "",
-    note: initial.note || "", status: initial.status || "dang_tim",
-  } : { name: "", phone: "", purpose: "để ở", budgetTy: "", budgetTyMax: "", khus: [], area_min: "", area_max: "", note: "", status: "dang_tim" });
+    note: initial.note || "", stage: initial.stage || "hoi",
+  } : { name: "", phone: "", purpose: "để ở", budgetTy: "", budgetTyMax: "", khus: [], area_min: "", area_max: "", note: "", stage: "hoi" });
   const [err, setErr] = useState("");
+  const [dupWarn, setDupWarn] = useState(null);
+  const [checking, setChecking] = useState(false);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
 
-  const submit = () => {
+  const payload = () => ({
+    name: f.name.trim(), phone: f.phone.trim(), purpose: f.purpose,
+    budget_min: f.budgetTy ? Math.round(Number(f.budgetTy) * 1e9) : null,
+    budget_max: f.budgetTyMax ? Math.round(Number(f.budgetTyMax) * 1e9) : null,
+    khus: f.khus, area_min: f.area_min ? Number(f.area_min) : null, area_max: f.area_max ? Number(f.area_max) : null,
+    note: f.note, stage: f.stage,
+  });
+  const submit = async () => {
     if (!f.name.trim()) { setErr("Cần tên khách"); return; }
-    onSave({
-      name: f.name.trim(), phone: f.phone.trim(), purpose: f.purpose,
-      budget_min: f.budgetTy ? Math.round(Number(f.budgetTy) * 1e9) : null,
-      budget_max: f.budgetTyMax ? Math.round(Number(f.budgetTyMax) * 1e9) : null,
-      khus: f.khus, area_min: f.area_min ? Number(f.area_min) : null, area_max: f.area_max ? Number(f.area_max) : null,
-      note: f.note, status: f.status,
-    });
+    if (f.phone.trim()) {
+      setChecking(true);
+      try {
+        const r = await api.demandCheckDup(f.phone.trim(), isEdit ? initial.id : "");
+        setChecking(false);
+        if (r.matches && r.matches.length) { setDupWarn(r.matches); return; }
+      } catch { setChecking(false); }
+    }
+    onSave(payload());
   };
 
   return (
@@ -1408,9 +1554,9 @@ function DemandForm({ initial, onSave, onCancel }) {
           <div className="field"><label>Đến (m²)</label><input inputMode="numeric" value={f.area_max} onChange={(e) => set("area_max", e.target.value)} /></div>
         </div>
         {isEdit && (
-          <div className="field"><label>Trạng thái</label>
-            <select value={f.status} onChange={(e) => set("status", e.target.value)}>
-              {Object.entries(DSTATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          <div className="field"><label>Giai đoạn (phễu)</label>
+            <select value={f.stage} onChange={(e) => set("stage", e.target.value)}>
+              {ALL_STAGES.map((s) => <option key={s.k} value={s.k}>{s.label}</option>)}
             </select>
           </div>
         )}
@@ -1419,8 +1565,31 @@ function DemandForm({ initial, onSave, onCancel }) {
       </div>
       <div className="wizbar">
         <button className="wback" onClick={onCancel}>Huỷ</button>
-        <button className="wnext" onClick={submit}><Icon n="check" size={17} />{isEdit ? "Lưu thay đổi" : "Lưu khách"}</button>
+        <button className="wnext" onClick={submit} disabled={checking}><Icon n="check" size={17} />{checking ? "Đang kiểm tra…" : (isEdit ? "Lưu thay đổi" : "Lưu khách")}</button>
       </div>
+
+      {dupWarn && (
+        <div className="ov" style={{ alignItems: "center" }} onClick={() => setDupWarn(null)}>
+          <div className="cfm" onClick={(e) => e.stopPropagation()}>
+            <div className="cfmt">⚠️ Khách này đã có trong kho</div>
+            <div className="cfmm">
+              SĐT này đã được ghi nhận — tránh 2 người cùng ôm một khách:
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8, textAlign: "left" }}>
+                {dupWarn.map((m) => (
+                  <div key={m.id} style={{ background: "var(--brand-t)", borderRadius: 10, padding: "9px 11px" }}>
+                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{m.name}</div>
+                    <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{stageOf(m.stage).label}{m.posted_by ? ` · phụ trách: ${m.posted_by}` : ""}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="cfmb">
+              <button className="wback" onClick={() => setDupWarn(null)}>Để tôi xem lại</button>
+              <button className="wnext" onClick={() => { setDupWarn(null); onSave(payload()); }}>Vẫn thêm</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

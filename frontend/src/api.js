@@ -42,6 +42,14 @@ export const api = {
     fetch(`${BASE}/api/demands/${id}`, { method: "DELETE", headers: h() }).then((r) => r.json()),
   demandContacted: (id) =>
     fetch(`${BASE}/api/demands/${id}/contacted`, { method: "POST", headers: h() }).then((r) => r.json()),
+  demandCheckDup: (phone, exclude) => {
+    const qs = new URLSearchParams(Object.entries({ phone, exclude }).filter(([, v]) => v));
+    return fetch(`${BASE}/api/demands/check-dup?${qs}`, { headers: h() }).then((r) => r.json());
+  },
+  addLog: (id, data) =>
+    fetch(`${BASE}/api/demands/${id}/logs`, { method: "POST", headers: h(), body: JSON.stringify(data) }).then((r) => r.json()),
+  removeLog: (id, lid) =>
+    fetch(`${BASE}/api/demands/${id}/logs/${lid}`, { method: "DELETE", headers: h() }).then((r) => r.json()),
 
   me: () => fetch(`${BASE}/api/auth/me`, { headers: h() }).then((r) => r.json()),
 
