@@ -91,6 +91,57 @@ class Favorite(db.Model):
     user_id = db.Column(db.String, db.ForeignKey("users.id"))
     property_id = db.Column(db.String, db.ForeignKey("properties.id"))
 
+class Demand(db.Model):
+    """Nhu cầu khách đang tìm mua — để tự ghép với lô đang có."""
+    __tablename__ = "demands"
+    id = db.Column(db.String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String, nullable=False)      # tên khách
+    phone = db.Column(db.String)
+    purpose = db.Column(db.String)                    # để ở | kinh doanh | đầu tư
+    budget_min = db.Column(db.BigInteger)             # VNĐ
+    budget_max = db.Column(db.BigInteger)
+    khus = db.Column(db.String)                       # thôn muốn, nhiều thôn cách nhau bởi ","
+    area_min = db.Column(db.Float)
+    area_max = db.Column(db.Float)
+    note = db.Column(db.Text)
+    status = db.Column(db.String, default="dang_tim")  # dang_tim | da_chot | tam_dung
+    posted_by = db.Column(db.String, db.ForeignKey("users.id"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_contact_at = db.Column(db.DateTime)
+
+    def khu_list(self):
+        return [k.strip() for k in (self.khus or "").split(",") if k.strip()]
+
+    def matches(self, p):
+        """Lô p có khớp nhu cầu này không (giá trong ngân sách, đúng thôn, đúng diện tích)."""
+        if p.is_archived or p.status == "da_ban":
+            return False
+        if self.budget_max and p.price and p.price > self.budget_max:
+            return False
+        if self.budget_min and p.price and p.price < self.budget_min:
+            return False
+        khus = self.khu_list()
+        if khus and p.khu not in khus:
+            return False
+        if self.area_min and p.area and p.area < self.area_min:
+            return False
+        if self.area_max and p.area and p.area > self.area_max:
+            return False
+        return True
+
+    def dict(self, match_count=None):
+        poster = User.query.get(self.posted_by) if self.posted_by else None
+        return {
+            "id": self.id, "name": self.name, "phone": self.phone, "purpose": self.purpose,
+            "budget_min": self.budget_min, "budget_max": self.budget_max,
+            "khus": self.khu_list(), "area_min": self.area_min, "area_max": self.area_max,
+            "note": self.note, "status": self.status,
+            "posted_by": poster.name if poster else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_contact_at": self.last_contact_at.isoformat() if self.last_contact_at else None,
+            "match_count": match_count,
+        }
+
 class Property(db.Model):
     __tablename__ = "properties"
     id = db.Column(db.String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -414,6 +465,84 @@ def del_fav(user, pid):
     Favorite.query.filter_by(user_id=user.id, property_id=pid).delete()
     db.session.commit()
     return jsonify({"ok": True, "is_fav": False})
+
+# ======================= NHU CẦU KHÁCH (ghép kèo) =======================
+DEMAND_FIELDS = ["name", "phone", "purpose", "budget_min", "budget_max", "khus",
+                 "area_min", "area_max", "note", "status"]
+
+def _apply_demand(d, data):
+    for f in DEMAND_FIELDS:
+        if f in data:
+            v = data[f]
+            if f == "khus" and isinstance(v, list):
+                v = ",".join(v)
+            setattr(d, f, v)
+
+@app.get("/api/demands")
+@token_required
+def list_demands(user):
+    active_props = Property.query.filter_by(is_archived=False).all()
+    out = []
+    for d in Demand.query.order_by(Demand.created_at.desc()).all():
+        cnt = sum(1 for p in active_props if d.matches(p)) if d.status == "dang_tim" else 0
+        out.append(d.dict(match_count=cnt))
+    return jsonify({"demands": out})
+
+@app.post("/api/demands")
+@token_required
+def create_demand(user):
+    data = request.get_json() or {}
+    if not data.get("name"):
+        return jsonify({"error": "Cần tên khách"}), 400
+    d = Demand(posted_by=user.id)
+    _apply_demand(d, data)
+    db.session.add(d); db.session.commit()
+    cnt = sum(1 for p in Property.query.filter_by(is_archived=False).all() if d.matches(p))
+    return jsonify({"demand": d.dict(match_count=cnt)}), 201
+
+@app.get("/api/demands/<did>")
+@token_required
+def get_demand(user, did):
+    d = Demand.query.get(did)
+    if not d: return jsonify({"error": "Không tìm thấy"}), 404
+    matched = [p for p in Property.query.filter_by(is_archived=False).all() if d.matches(p)]
+    return jsonify({"demand": d.dict(match_count=len(matched)),
+                    "properties": [p.dict(user) for p in matched]})
+
+@app.put("/api/demands/<did>")
+@token_required
+def update_demand(user, did):
+    d = Demand.query.get(did)
+    if not d: return jsonify({"error": "Không tìm thấy"}), 404
+    _apply_demand(d, request.get_json() or {})
+    db.session.commit()
+    cnt = sum(1 for p in Property.query.filter_by(is_archived=False).all() if d.matches(p))
+    return jsonify({"demand": d.dict(match_count=cnt)})
+
+@app.delete("/api/demands/<did>")
+@token_required
+def delete_demand(user, did):
+    d = Demand.query.get(did)
+    if not d: return jsonify({"error": "Không tìm thấy"}), 404
+    db.session.delete(d); db.session.commit()
+    return jsonify({"ok": True})
+
+@app.post("/api/demands/<did>/contacted")
+@token_required
+def demand_contacted(user, did):
+    d = Demand.query.get(did)
+    if not d: return jsonify({"error": "Không tìm thấy"}), 404
+    d.last_contact_at = datetime.utcnow(); db.session.commit()
+    return jsonify({"ok": True, "last_contact_at": d.last_contact_at.isoformat()})
+
+@app.get("/api/properties/<pid>/demands")
+@token_required
+def property_matches(user, pid):
+    """Khách đang tìm mà lô này khớp — dùng để báo 'khớp N khách đang chờ' khi lưu lô."""
+    p = Property.query.get(pid)
+    if not p: return jsonify({"error": "Không tìm thấy"}), 404
+    matched = [d for d in Demand.query.filter_by(status="dang_tim").all() if d.matches(p)]
+    return jsonify({"demands": [d.dict() for d in matched]})
 
 # ======================= AI BÓC TÁCH =======================
 @app.post("/api/ai-parse")
